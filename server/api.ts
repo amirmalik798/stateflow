@@ -357,12 +357,16 @@ export function registerApi(app: Express, broadcast: Broadcast): void {
       return;
     }
 
-    const body = req.body as Record<string, unknown>;
+    const body = req.body && typeof req.body === 'object'
+      ? req.body as Record<string, unknown>
+      : {};
     const loginId = typeof body.loginId === 'string' ? body.loginId : '';
     const password = typeof body.password === 'string' ? body.password : '';
-    const loginIdMatches = constantTimeStringEquals(loginId, configuredLoginId);
-    const passwordMatches = constantTimeStringEquals(password, configuredPassword);
-    const valid = loginId.length <= 120 && password.length <= 1024 && loginIdMatches && passwordMatches;
+    const credentialsInBounds = loginId.length > 0 && loginId.length <= 120 &&
+      password.length > 0 && password.length <= 1024;
+    const loginIdMatches = credentialsInBounds && constantTimeStringEquals(loginId, configuredLoginId);
+    const passwordMatches = credentialsInBounds && constantTimeStringEquals(password, configuredPassword);
+    const valid = credentialsInBounds && loginIdMatches && passwordMatches;
     if (!valid) {
       const lockout = recordLoginFailure(ip);
       if (lockout > 0) {
