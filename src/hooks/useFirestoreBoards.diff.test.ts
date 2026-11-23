@@ -48,7 +48,9 @@ describe('syncElementsDiff document write counts', () => {
   it('updates only the one changed element among 1,000', () => {
     const previous = makeElements(1000);
     const next = previous.map((element) => ({ ...element }));
-    next[537] = { ...next[537], x: next[537].x + 12 };
+    const changedElement = next[537];
+    if (changedElement.type !== 'rectangle') throw new Error('Expected rectangle fixture');
+    next[537] = { ...changedElement, x: changedElement.x + 12 };
     expect(countWrites(previous, next)).toEqual({
       creates: 0, updates: 1, deletes: 0, total: 1,
     });
