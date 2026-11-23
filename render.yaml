@@ -4,7 +4,7 @@ services:
     runtime: docker
     plan: free
     region: frankfurt
-    branch: feature/render-managed-postgres-hosting
+    branch: main
     dockerfilePath: ./Dockerfile
     dockerContext: .
     healthCheckPath: /healthz
