@@ -34,6 +34,8 @@ import {
   StrokeElement,
 } from '../types/whiteboard';
 
+export type StrokeSyncStatus = 'saved' | 'pending' | 'syncing' | 'offline' | 'error';
+
 function toMillis(val: unknown): number {
   if (val instanceof Timestamp) return val.toMillis();
   if (typeof val === 'number') return val;
@@ -240,7 +242,7 @@ export function useFirestoreBoards(user: User | null, isReadOnly: boolean) {
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<Error | null>(null);
   const [pendingStrokeCount, setPendingStrokeCount] = useState(0);
-  const [strokeSyncStatus, setStrokeSyncStatus] = useState<'saved' | 'pending' | 'syncing' | 'offline' | 'error'>('saved');
+  const [strokeSyncStatus, setStrokeSyncStatus] = useState<StrokeSyncStatus>('saved');
 
   const elementsMapRef = useRef<Map<string, CanvasElement[]>>(new Map());
   const cameraSaveTimerRef = useRef<number | null>(null);
