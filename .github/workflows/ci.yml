@@ -21,7 +21,7 @@ jobs:
           node-version: 24
       - name: Install dependencies
         run: npm install --no-package-lock --legacy-peer-deps
-      - name: Run sync diff and local handwriting journal regression tests
+      - name: Run sync diff and local-first database regression tests
         run: npm run test:sync-diff
       - name: Type-check
         run: npm run lint
