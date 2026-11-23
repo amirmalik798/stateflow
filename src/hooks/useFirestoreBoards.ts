@@ -16,12 +16,12 @@ import {
 } from 'firebase/firestore';
 import { createStarterElements } from '../constants/starter';
 import { db, handleFirestoreError, OperationType } from '../firebase';
+import { areElementDocumentsEqual, decimatePoints } from '../utils/elementDiff';
 import {
   Board,
   Camera,
   CanvasElement,
   GridStyle,
-  Point,
 } from '../types/whiteboard';
 
 function toMillis(val: unknown): number {
@@ -41,29 +41,6 @@ function clampCamera(cam: Camera): Camera {
     y: Number.isFinite(cam.y) ? cam.y : 0,
     zoom: Number.isFinite(cam.zoom) ? Math.min(5, Math.max(0.1, cam.zoom)) : 1,
   };
-}
-
-function decimatePoints(points: Point[], maxPoints = 3500): Point[] {
-  if (points.length <= maxPoints) return points;
-  const step = Math.ceil(points.length / maxPoints);
-  const out: Point[] = [];
-  for (let i = 0; i < points.length; i += step) {
-    const p = points[i];
-    out.push({
-      x: p.x,
-      y: p.y,
-      pressure: typeof p.pressure === 'number' ? p.pressure : 0.5,
-    });
-  }
-  const last = points[points.length - 1];
-  if (out[out.length - 1] !== last) {
-    out.push({
-      x: last.x,
-      y: last.y,
-      pressure: typeof last.pressure === 'number' ? last.pressure : 0.5,
-    });
-  }
-  return out;
 }
 
 function serializeElementForFirestore(
@@ -162,78 +139,6 @@ function serializeElementForFirestore(
  * Compare the values serialized to Firestore; object identity and timestamps
  * are not document content and must not cause a rewrite.
  */
-export function areElementDocumentsEqual(previous: CanvasElement, next: CanvasElement): boolean {
-  if (
-    previous.id !== next.id ||
-    previous.type !== next.type ||
-    previous.zIndex !== next.zIndex ||
-    Math.min(1, Math.max(0, previous.opacity ?? 1)) !==
-      Math.min(1, Math.max(0, next.opacity ?? 1)) ||
-    previous.locked !== next.locked
-  ) return false;
-
-  const sameString = (a: string, b: string, max: number) =>
-    a.slice(0, max) === b.slice(0, max);
-
-  switch (next.type) {
-    case 'pen':
-    case 'highlighter': {
-      if (
-        previous.type !== next.type ||
-        !sameString(previous.color, next.color, 64) ||
-        previous.strokeWidth !== next.strokeWidth
-      ) return false;
-      const a = decimatePoints(previous.points);
-      const b = decimatePoints(next.points);
-      if (a.length !== b.length) return false;
-      for (let index = 0; index < a.length; index += 1) {
-        if (
-          a[index].x !== b[index].x ||
-          a[index].y !== b[index].y ||
-          (typeof a[index].pressure === 'number' ? a[index].pressure : 0.5) !==
-            (typeof b[index].pressure === 'number' ? b[index].pressure : 0.5)
-        ) return false;
-      }
-      return true;
-    }
-    case 'rectangle':
-    case 'ellipse':
-    case 'diamond':
-      return previous.type === next.type &&
-        previous.x === next.x && previous.y === next.y &&
-        previous.width === next.width && previous.height === next.height &&
-        sameString(previous.strokeColor, next.strokeColor, 64) &&
-        sameString(previous.fillColor, next.fillColor, 64) &&
-        previous.strokeWidth === next.strokeWidth;
-    case 'line':
-    case 'arrow':
-      return previous.type === next.type &&
-        previous.x1 === next.x1 && previous.y1 === next.y1 &&
-        previous.x2 === next.x2 && previous.y2 === next.y2 &&
-        sameString(previous.strokeColor, next.strokeColor, 64) &&
-        previous.strokeWidth === next.strokeWidth;
-    case 'sticky':
-      return previous.type === 'sticky' &&
-        previous.x === next.x && previous.y === next.y &&
-        previous.width === next.width && previous.height === next.height &&
-        sameString(previous.text, next.text, 8000) &&
-        sameString(previous.bgColor, next.bgColor, 64) &&
-        sameString(previous.textColor, next.textColor, 64);
-    case 'text':
-      return previous.type === 'text' &&
-        previous.x === next.x && previous.y === next.y &&
-        previous.width === next.width && previous.height === next.height &&
-        sameString(previous.text, next.text, 8000) &&
-        sameString(previous.color, next.color, 64) &&
-        previous.fontSize === next.fontSize;
-    case 'image':
-      return previous.type === 'image' &&
-        previous.x === next.x && previous.y === next.y &&
-        previous.width === next.width && previous.height === next.height &&
-        sameString(previous.dataUrl, next.dataUrl, 700000);
-  }
-}
-
 function docToElement(id: string, data: Record<string, unknown>): CanvasElement {
   const type = String(data.type) as CanvasElement['type'];
   const base = {
