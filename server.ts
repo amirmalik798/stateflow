@@ -4,14 +4,35 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocket, WebSocketServer } from 'ws';
 import { getSessionUserId, initializeDatabase, pool, registerApi } from './server/api';
+import { startSocksTcpForwarder } from './server/socksTcpForwarder';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
+app.get('/healthz', (_req, res) => res.status(200).json({ ok: true, service: 'stateflow' }));
 app.set('trust proxy', 1);
 app.use(express.json({ limit: '20mb' }));
 const server = http.createServer(app);
+let dbRetryTimer: NodeJS.Timeout | null = null;
+let databaseReady = false;
+let databaseInitialization: Promise<void> | null = null;
+
+async function tryInitializeDatabase(): Promise<void> {
+  if (!pool || databaseReady || databaseInitialization) return databaseInitialization ?? Promise.resolve();
+  databaseInitialization = initializeDatabase()
+    .then(() => {
+      databaseReady = true;
+      console.log('Stateflow PostgreSQL schema is ready.');
+    })
+    .catch((error) => {
+      console.warn('PostgreSQL is unavailable. Stateflow remains available for local/offline work; synchronization will retry.', error instanceof Error ? error.message : error);
+    })
+    .finally(() => {
+      databaseInitialization = null;
+    });
+  return databaseInitialization;
+}
 const wss = new WebSocketServer({
   noServer: true,
   perMessageDeflate: false,
@@ -187,15 +208,30 @@ const heartbeat = setInterval(() => {
 wss.on('close', () => clearInterval(heartbeat));
 server.on('close', () => {
   wss.close();
+  if (dbRetryTimer) clearInterval(dbRetryTimer);
   void pool?.end();
 });
 
 async function start() {
   const isProd = process.env.NODE_ENV === 'production';
 
+  const tailnetDatabaseHost = process.env.PG_TAILSCALE_TARGET_HOST?.trim();
+  if (tailnetDatabaseHost) {
+    await startSocksTcpForwarder({
+      targetHost: tailnetDatabaseHost,
+      targetPort: Number(process.env.PG_TAILSCALE_TARGET_PORT) || 5432,
+      listenHost: '127.0.0.1',
+      listenPort: Number(process.env.PG_TAILSCALE_LOCAL_PORT) || 15432,
+      proxyHost: '127.0.0.1',
+      proxyPort: Number(process.env.PG_TAILSCALE_SOCKS_PORT) || 1055,
+    });
+    console.log('Stateflow PostgreSQL Tailscale forwarder listening on loopback.');
+  }
+
   if (pool) {
-    await initializeDatabase();
-    console.log('Stateflow PostgreSQL schema is ready.');
+    void tryInitializeDatabase();
+    dbRetryTimer = setInterval(() => void tryInitializeDatabase(), 10000);
+    dbRetryTimer.unref();
   } else {
     console.warn('DATABASE_URL is not configured. The app shell can run, but login and synchronization are disabled.');
   }

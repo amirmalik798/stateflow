@@ -14,12 +14,18 @@ declare global {
 export const pool = process.env.DATABASE_URL
   ? new Pool({
       connectionString: process.env.DATABASE_URL,
-      max: Number(process.env.PG_POOL_SIZE || 10),
+      max: Number(process.env.PG_POOL_SIZE || 4),
       idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 10000,
+      connectionTimeoutMillis: 5000,
       ...(process.env.PG_SSL === 'true' ? { ssl: { rejectUnauthorized: true } } : {}),
     })
   : null;
+
+if (pool) {
+  pool.on('error', (error) => {
+    console.error('PostgreSQL pool connection error.', error.message);
+  });
+}
 
 const SESSION_COOKIE = 'stateflow_session';
 const OAUTH_STATE_COOKIE = 'stateflow_oauth_state';
