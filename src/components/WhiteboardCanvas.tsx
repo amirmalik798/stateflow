@@ -845,7 +845,9 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
     if (mode.kind === 'pan') {
       const dxScreen = sx - mode.startScreen.x;
       const dyScreen = sy - mode.startScreen.y;
-      const threshold = mode.pointerType === 'touch' ? 5 : 0;
+      // A desktop pointer can generate tiny move events just by hovering after focus returns.
+      // Require a deliberate drag before leaving Follow mode or moving the camera.
+      const threshold = mode.pointerType === 'touch' ? 5 : readOnly ? 4 : 0;
       if (!mode.moved) {
         if (Math.hypot(dxScreen, dyScreen) < threshold) return;
         mode.moved = true;
