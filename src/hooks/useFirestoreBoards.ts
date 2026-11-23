@@ -22,6 +22,7 @@ import {
   Camera,
   CanvasElement,
   GridStyle,
+  Point,
 } from '../types/whiteboard';
 
 function toMillis(val: unknown): number {
