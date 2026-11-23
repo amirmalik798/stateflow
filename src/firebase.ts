@@ -1,19 +1,33 @@
 import { initializeApp } from 'firebase/app';
+import { getAuth, GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth';
 import {
-  GoogleAuthProvider,
-  getAuth,
-  signInWithPopup,
-  signOut,
-} from 'firebase/auth';
-import {
-  doc,
-  getDocFromServer,
   getFirestore,
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
 } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 
 const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app);
+
+// Keep confirmed board data available offline, across reloads and multiple tabs.
+// The separate stroke journal below this layer preserves writes not yet acknowledged
+// by Firestore, so an interrupted network connection cannot silently lose new strokes.
+function createFirestoreInstance() {
+  try {
+    return initializeFirestore(app, {
+      localCache: persistentLocalCache({
+        tabManager: persistentMultipleTabManager(),
+      }),
+    });
+  } catch (error) {
+    // Browsers with unavailable IndexedDB can still use Stateflow with memory cache.
+    console.warn('Persistent Firestore cache is unavailable; using memory cache.', error);
+    return getFirestore(app);
+  }
+}
+
+export const db = createFirestoreInstance();
 export const auth = getAuth(app);
 
 const googleProvider = new GoogleAuthProvider();
@@ -79,14 +93,3 @@ export function handleFirestoreError(
   throw new Error(JSON.stringify(errInfo));
 }
 
-async function testConnection() {
-  try {
-    await getDocFromServer(doc(db, 'test', 'connection'));
-  } catch (error) {
-    if (error instanceof Error && error.message.includes('the client is offline')) {
-      console.error('Please check your Firebase configuration.');
-    }
-  }
-}
-
-void testConnection();
