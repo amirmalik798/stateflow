@@ -15,7 +15,6 @@ import {
   Camera,
   CanvasElement,
   GridStyle,
-  PhoneViewportFrame,
   Point,
   RemoteCursor,
   ResizeHandle,
@@ -31,7 +30,6 @@ import { STICKY_COLORS } from '../constants/palette';
 interface WhiteboardCanvasProps {
   elements: CanvasElement[];
   remoteDraftElement?: CanvasElement | null;
-  remoteViewport?: PhoneViewportFrame | null;
   remoteCursor?: RemoteCursor | null;
   camera: Camera;
   gridStyle: GridStyle;
@@ -106,7 +104,6 @@ function isStylusEraserPressed(e: React.PointerEvent<HTMLCanvasElement>): boolea
 export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
   elements,
   remoteDraftElement = null,
-  remoteViewport = null,
   remoteCursor = null,
   camera,
   gridStyle,
@@ -142,7 +139,6 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
   const propsRef = useRef({
     elements,
     remoteDraftElement,
-    remoteViewport,
     remoteCursor,
     camera,
     gridStyle,
@@ -157,7 +153,6 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
   propsRef.current = {
     elements,
     remoteDraftElement,
-    remoteViewport,
     remoteCursor,
     camera,
     gridStyle,
@@ -203,7 +198,6 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
         gridStyle: p.gridStyle,
         theme: p.theme,
         editingElementId: p.isReadOnly ? null : p.editingElementId,
-        remoteViewport: p.isReadOnly ? p.remoteViewport : null,
         remoteCursor: p.isReadOnly ? p.remoteCursor : null,
         hoverCursor: p.isReadOnly ? null : hoverCursorRef.current,
         onImageLoaded: scheduleRender,
@@ -216,7 +210,6 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
   }, [
     elements,
     remoteDraftElement,
-    remoteViewport,
     remoteCursor,
     camera,
     gridStyle,

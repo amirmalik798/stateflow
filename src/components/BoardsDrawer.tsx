@@ -12,7 +12,7 @@ interface BoardsDrawerProps {
   boards: Board[];
   activeBoardId: string;
   onSelectBoard: (id: string) => void;
-  onCreateBoard: (templateId?: BoardTemplateId) => void;
+  onCreateBoard: (templateId?: BoardTemplateId, title?: string) => void;
   onDuplicateBoard: (id: string) => void;
   onDeleteBoard: (id: string) => void;
 }
@@ -141,21 +141,53 @@ export const BoardsDrawer: React.FC<BoardsDrawerProps> = ({
   onDeleteBoard,
 }) => {
   const [query, setQuery] = useState('');
-  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [boardToDelete, setBoardToDelete] = useState<Board | null>(null);
+  const [pendingTemplate, setPendingTemplate] = useState<BoardTemplateId | null>(null);
+  const [newBoardTitle, setNewBoardTitle] = useState('');
   const [showTemplates, setShowTemplates] = useState(false);
+  const deleteCancelRef = useRef<HTMLButtonElement>(null);
+  const createTitleRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!open) {
-      setConfirmDeleteId(null);
+      setBoardToDelete(null);
+      setPendingTemplate(null);
+      setNewBoardTitle('');
       setShowTemplates(false);
     }
   }, [open]);
+
+  useEffect(() => {
+    if (pendingTemplate) createTitleRef.current?.focus();
+    if (boardToDelete) deleteCancelRef.current?.focus();
+    if (!pendingTemplate && !boardToDelete) return;
+
+    const handleDialogKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      if (boardToDelete) setBoardToDelete(null);
+      else setPendingTemplate(null);
+    };
+
+    window.addEventListener('keydown', handleDialogKeyDown);
+    return () => window.removeEventListener('keydown', handleDialogKeyDown);
+  }, [pendingTemplate, boardToDelete]);
 
   if (!open) return null;
 
   const filtered = boards.filter((b) =>
     b.title.toLowerCase().includes(query.trim().toLowerCase())
   );
+
+  const getSuggestedTitle = (templateId: BoardTemplateId): string => {
+    const template = BOARD_TEMPLATES.find((item) => item.id === templateId) ?? BOARD_TEMPLATES[0];
+    const baseTitle = templateId === 'blank' ? `Board ${boards.length + 1}` : template.defaultTitle;
+    const existingTitles = new Set(boards.map((board) => board.title.trim().toLocaleLowerCase()));
+    if (!existingTitles.has(baseTitle.toLocaleLowerCase())) return baseTitle;
+
+    let suffix = 2;
+    while (existingTitles.has(`${baseTitle} ${suffix}`.toLocaleLowerCase())) suffix += 1;
+    return `${baseTitle} ${suffix}`;
+  };
 
   return (
     <div
@@ -235,9 +267,8 @@ export const BoardsDrawer: React.FC<BoardsDrawerProps> = ({
                   key={tpl.id}
                   type="button"
                   onClick={() => {
-                    onCreateBoard(tpl.id);
-                    setShowTemplates(false);
-                    onClose();
+                    setNewBoardTitle(getSuggestedTitle(tpl.id));
+                    setPendingTemplate(tpl.id);
                   }}
                   className="group text-left p-2.5 rounded-2xl border border-slate-200/80 dark:border-white/[0.08] bg-slate-50/60 dark:bg-white/[0.03] hover:border-blue-500/60 hover:bg-blue-50/40 dark:hover:bg-blue-500/10 active:scale-[0.98] transition-all"
                 >
@@ -262,7 +293,6 @@ export const BoardsDrawer: React.FC<BoardsDrawerProps> = ({
           ) : (
             filtered.map((board) => {
               const isActive = board.id === activeBoardId;
-              const confirmingDelete = confirmDeleteId === board.id;
 
               return (
                 <div
@@ -302,49 +332,25 @@ export const BoardsDrawer: React.FC<BoardsDrawerProps> = ({
 
                   {!isReadOnly && (
                     <div className="flex items-center gap-1 shrink-0">
-                      {confirmingDelete ? (
-                        <>
-                          <button
-                            type="button"
-                            onClick={() => setConfirmDeleteId(null)}
-                            className="h-9 px-2.5 rounded-xl bg-slate-200/80 dark:bg-white/10 text-slate-700 dark:text-slate-200 text-xs font-semibold"
-                          >
-                            Cancel
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setConfirmDeleteId(null);
-                              onDeleteBoard(board.id);
-                            }}
-                            className="h-9 px-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold"
-                          >
-                            Delete
-                          </button>
-                        </>
-                      ) : (
-                        <>
-                          <button
-                            type="button"
-                            onClick={() => onDuplicateBoard(board.id)}
-                            aria-label={`Duplicate ${board.title}`}
-                            title="Duplicate board"
-                            className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-xl text-slate-500 dark:text-slate-400 hover:bg-slate-200/70 dark:hover:bg-white/10"
-                          >
-                            <Copy className="w-4 h-4" />
-                          </button>
-                          {boards.length > 1 && (
-                            <button
-                              type="button"
-                              onClick={() => setConfirmDeleteId(board.id)}
-                              aria-label={`Delete ${board.title}`}
-                              title="Delete board"
-                              className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-xl text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-500/15"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          )}
-                        </>
+                      <button
+                        type="button"
+                        onClick={() => onDuplicateBoard(board.id)}
+                        aria-label={`Duplicate ${board.title}`}
+                        title="Duplicate board"
+                        className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-xl text-slate-500 dark:text-slate-400 hover:bg-slate-200/70 dark:hover:bg-white/10"
+                      >
+                        <Copy className="w-4 h-4" />
+                      </button>
+                      {boards.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() => setBoardToDelete(board)}
+                          aria-label={`Delete ${board.title}`}
+                          title="Delete board"
+                          className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-xl text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-500/15"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
                       )}
                     </div>
                   )}
@@ -355,6 +361,130 @@ export const BoardsDrawer: React.FC<BoardsDrawerProps> = ({
         </div>
         )}
       </aside>
+
+      {pendingTemplate && !isReadOnly && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/65 backdrop-blur-sm p-4"
+          onPointerDown={(event) => {
+            if (event.target === event.currentTarget) setPendingTemplate(null);
+          }}
+        >
+          <form
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="create-board-dialog-title"
+            aria-describedby="create-board-dialog-description"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (!pendingTemplate || !newBoardTitle.trim()) return;
+              onCreateBoard(pendingTemplate, newBoardTitle.trim());
+              setPendingTemplate(null);
+              setShowTemplates(false);
+              onClose();
+            }}
+            className="w-full max-w-sm rounded-3xl border border-slate-200 dark:border-white/10 bg-white dark:bg-[#171A21] p-5 shadow-2xl"
+          >
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-2xl flex items-center justify-center bg-blue-50 dark:bg-blue-500/15 text-blue-600 dark:text-blue-400 shrink-0">
+                <Plus className="w-5 h-5" />
+              </div>
+              <div className="min-w-0">
+                <h3 id="create-board-dialog-title" className="text-base font-bold text-slate-900 dark:text-white">
+                  Name your board
+                </h3>
+                <p id="create-board-dialog-description" className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+                  Choose a name before creating this {BOARD_TEMPLATES.find((item) => item.id === pendingTemplate)?.label.toLowerCase()}.
+                </p>
+              </div>
+            </div>
+
+            <label htmlFor="new-board-title" className="block mt-5 mb-2 text-xs font-semibold text-slate-600 dark:text-slate-300">
+              Board name
+            </label>
+            <input
+              ref={createTitleRef}
+              id="new-board-title"
+              type="text"
+              value={newBoardTitle}
+              onChange={(event) => setNewBoardTitle(event.target.value)}
+              maxLength={120}
+              autoComplete="off"
+              placeholder="Enter a board name"
+              className="w-full h-12 px-3 rounded-2xl bg-slate-100 dark:bg-white/[0.06] border border-transparent text-sm text-slate-900 dark:text-white placeholder:text-slate-400 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+            />
+
+            <div className="flex items-center justify-end gap-2 mt-6">
+              <button
+                type="button"
+                onClick={() => setPendingTemplate(null)}
+                className="h-10 px-4 rounded-xl text-sm font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/10"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={!newBoardTitle.trim()}
+                className="h-10 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold"
+              >
+                Create board
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {boardToDelete && !isReadOnly && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/65 backdrop-blur-sm p-4"
+          onPointerDown={(event) => {
+            if (event.target === event.currentTarget) setBoardToDelete(null);
+          }}
+        >
+          <div
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="delete-board-dialog-title"
+            aria-describedby="delete-board-dialog-description"
+            className="w-full max-w-sm rounded-3xl border border-slate-200 dark:border-white/10 bg-white dark:bg-[#171A21] p-5 shadow-2xl"
+          >
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-2xl flex items-center justify-center bg-rose-50 dark:bg-rose-500/15 text-rose-600 dark:text-rose-400 shrink-0">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div className="min-w-0">
+                <h3 id="delete-board-dialog-title" className="text-base font-bold text-slate-900 dark:text-white">
+                  Delete this board?
+                </h3>
+                <p id="delete-board-dialog-description" className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+                  <span className="font-semibold text-slate-700 dark:text-slate-200">“{boardToDelete.title}”</span> and all of its content will be deleted. This cannot be undone.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 mt-6">
+              <button
+                ref={deleteCancelRef}
+                type="button"
+                onClick={() => setBoardToDelete(null)}
+                className="h-10 px-4 rounded-xl text-sm font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/10"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const targetBoard = boardToDelete;
+                  setBoardToDelete(null);
+                  onDeleteBoard(targetBoard.id);
+                }}
+                className="h-10 px-4 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-sm font-semibold"
+              >
+                Delete board
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

@@ -94,10 +94,6 @@ export default function App() {
     boardId: string;
     element: CanvasElement | null;
   } | null>(null);
-  const [remoteViewport, setRemoteViewport] = useState<{
-    boardId: string;
-    frame: PhoneViewportFrame;
-  } | null>(null);
   const [remoteCursor, setRemoteCursor] = useState<{
     boardId: string;
     cursor: RemoteCursor | null;
@@ -261,7 +257,6 @@ export default function App() {
           height: viewport.height,
         };
         lastRemoteViewportRef.current = { boardId, frame };
-        setRemoteViewport({ boardId, frame });
       }
       if (followPhoneRef.current) {
         setOptimisticCamera({ boardId, camera });
@@ -354,6 +349,17 @@ export default function App() {
   }, [theme]);
 
   const activeBoardMeta = boards.find((b) => b.id === activeBoardId) ?? boards[0] ?? null;
+
+  // Enter desktop viewing in Follow mode whenever the device switches into read-only mode.
+  // Manual panning/zooming still exits Follow until the next desktop-mode entry.
+  useEffect(() => {
+    if (!isReadOnly) return;
+    setFollowPhone(true);
+    const latestFrame = lastRemoteViewportRef.current;
+    if (latestFrame && latestFrame.boardId === activeBoardIdRef.current) {
+      setOptimisticCamera({ boardId: latestFrame.boardId, camera: latestFrame.frame.camera });
+    }
+  }, [isReadOnly]);
 
   // Reset desktop optimistic camera from Firestore only when following phone & no recent WS camera arrived
   useEffect(() => {
@@ -733,13 +739,22 @@ export default function App() {
     void setWorkspaceActiveBoard(id);
   };
 
-  const handleCreateBoard = async (templateId: BoardTemplateId = 'blank') => {
+  const handleCreateBoard = async (
+    templateId: BoardTemplateId = 'blank',
+    requestedTitle?: string
+  ) => {
     if (isReadOnly) return;
     const num = boards.length + 1;
     const tpl = BOARD_TEMPLATES.find((t) => t.id === templateId) ?? BOARD_TEMPLATES[0];
     const baseTitle = templateId === 'blank' ? `Board ${num}` : tpl.defaultTitle;
-    const existingWithTitle = boards.some((b) => b.title === baseTitle);
-    const title = existingWithTitle && templateId !== 'blank' ? `${baseTitle} ${num}` : baseTitle;
+    const existingTitles = new Set(boards.map((board) => board.title.trim().toLocaleLowerCase()));
+    let defaultTitle = baseTitle;
+    if (existingTitles.has(defaultTitle.toLocaleLowerCase())) {
+      let suffix = 2;
+      while (existingTitles.has(`${baseTitle} ${suffix}`.toLocaleLowerCase())) suffix += 1;
+      defaultTitle = `${baseTitle} ${suffix}`;
+    }
+    const title = requestedTitle?.trim().slice(0, 120) || defaultTitle;
 
     const newId = await createBoard(
       title,
@@ -825,8 +840,6 @@ export default function App() {
 
   const activeRemoteDraft =
     remoteDraft && remoteDraft.boardId === activeBoard.id ? remoteDraft.element : null;
-  const activeRemoteViewport =
-    remoteViewport && remoteViewport.boardId === activeBoard.id ? remoteViewport.frame : null;
   const activeRemoteCursor =
     remoteCursor && remoteCursor.boardId === activeBoard.id ? remoteCursor.cursor : null;
 
@@ -895,7 +908,6 @@ export default function App() {
       <WhiteboardCanvas
         elements={activeBoard.elements}
         remoteDraftElement={activeRemoteDraft}
-        remoteViewport={activeRemoteViewport}
         remoteCursor={activeRemoteCursor}
         camera={activeBoard.camera}
         gridStyle={activeBoard.gridStyle}

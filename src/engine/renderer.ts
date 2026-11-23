@@ -4,7 +4,6 @@ import {
   CanvasElement,
   GridStyle,
   LineElement,
-  PhoneViewportFrame,
   Point,
   RemoteCursor,
   ThemeMode,
@@ -403,7 +402,6 @@ export interface RenderOptions {
   gridStyle: GridStyle;
   theme: ThemeMode;
   editingElementId: string | null;
-  remoteViewport?: PhoneViewportFrame | null;
   remoteCursor?: RemoteCursor | null;
   hoverCursor?: HoverCursor | null;
   onImageLoaded?: () => void;
@@ -423,7 +421,6 @@ export function renderWhiteboard(ctx: CanvasRenderingContext2D, opts: RenderOpti
     gridStyle,
     theme,
     editingElementId,
-    remoteViewport,
     remoteCursor,
     hoverCursor,
     onImageLoaded,
@@ -526,20 +523,6 @@ export function renderWhiteboard(ctx: CanvasRenderingContext2D, opts: RenderOpti
       ctx.lineTo(eraserTrail[i].x, eraserTrail[i].y);
     }
     ctx.stroke();
-  }
-
-  // Phone viewport outline on desktop read-only viewer
-  if (remoteViewport && remoteViewport.width > 0 && remoteViewport.height > 0) {
-    const rw = remoteViewport.width / remoteViewport.camera.zoom;
-    const rh = remoteViewport.height / remoteViewport.camera.zoom;
-    const rx = remoteViewport.camera.x - rw / 2;
-    const ry = remoteViewport.camera.y - rh / 2;
-    ctx.save();
-    ctx.strokeStyle = theme === 'dark' ? 'rgba(96, 165, 250, 0.35)' : 'rgba(37, 99, 235, 0.3)';
-    ctx.lineWidth = 1.25 / camera.zoom;
-    ctx.setLineDash([6 / camera.zoom, 6 / camera.zoom]);
-    ctx.strokeRect(rx, ry, rw, rh);
-    ctx.restore();
   }
 
   // Live stylus pointer on desktop
