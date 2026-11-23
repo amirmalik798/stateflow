@@ -156,7 +156,6 @@ service cloud.firestore {
       allow create: if isValidId(boardId)
         && isVerifiedUser()
         && isValidBoard(incoming())
-        && incoming().createdAt <= request.time
         && incoming().updatedAt == request.time;
       allow update: if isValidId(boardId)
         && isVerifiedUser()
