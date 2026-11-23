@@ -50,6 +50,9 @@ export default function App() {
     activeBoardId,
     activeElements,
     loading: boardsLoading,
+    pendingStrokeCount,
+    strokeSyncStatus,
+    savePendingStrokes,
     setWorkspaceActiveBoard,
     applyRemoteActiveBoardId,
     syncElementsDiff,
@@ -823,6 +826,9 @@ export default function App() {
         boardTitle={activeBoard.title}
         isReadOnly={isReadOnly}
         syncStatus={effectiveSyncStatus}
+        strokeSyncStatus={strokeSyncStatus}
+        pendingStrokeCount={pendingStrokeCount}
+        onSaveNow={() => void savePendingStrokes().catch(() => undefined)}
         followPhone={followPhone}
         onToggleFollowPhone={handleToggleFollowPhone}
         zenMode={zenMode}
