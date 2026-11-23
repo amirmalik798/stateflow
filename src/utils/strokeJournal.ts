@@ -22,7 +22,7 @@ export interface StrokeJournalEntry {
 
 export type StrokeJournalChange =
   | { operation: 'upsert'; element: StrokeElement }
-  | { operation: 'delete'; elementId: string };
+  | { operation: 'delete'; elementId: string; createdAtMs?: number };
 
 function makeRevision(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
@@ -52,7 +52,7 @@ export function coalesceStrokeJournalEntry(
       boardId,
       elementId,
       operation: 'delete',
-      createdAtMs: current?.createdAtMs ?? queuedAt,
+      createdAtMs: current?.createdAtMs ?? change.createdAtMs ?? queuedAt,
       requiresCreate: current?.operation === 'upsert',
       revision,
       queuedAt,
@@ -85,7 +85,7 @@ export function coalesceStrokeJournalEntry(
     elementId,
     operation: 'upsert',
     element: change.element,
-    createdAtMs: current?.createdAtMs ?? queuedAt,
+    createdAtMs: current?.createdAtMs ?? change.element.createdAtMs ?? queuedAt,
     requiresCreate: false,
     revision,
     queuedAt,
