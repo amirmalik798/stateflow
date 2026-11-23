@@ -16,8 +16,10 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
   throw "Run PowerShell as Administrator, then run this script again."
 }
 
-if (-not (Get-Command tailscale.exe -ErrorAction SilentlyContinue)) {
-  throw "Tailscale is not installed or tailscale.exe is not on PATH. Install Tailscale and sign this PC into your tailnet first."
+$tailscaleCommand = Get-Command tailscale.exe -ErrorAction SilentlyContinue
+$tailscaleCli = if ($tailscaleCommand) { $tailscaleCommand.Source } else { Join-Path $env:ProgramFiles "Tailscale\tailscale.exe" }
+if (-not (Test-Path -LiteralPath $tailscaleCli)) {
+  throw "Tailscale is not installed. Install Tailscale and sign this PC into your tailnet first."
 }
 
 $tailscaleService = Get-Service -Name "Tailscale" -ErrorAction SilentlyContinue
@@ -29,7 +31,7 @@ if ($tailscaleService.Status -ne "Running") {
   Start-Service -Name "Tailscale"
 }
 
-$tailnetIp = (& tailscale.exe ip -4 | Select-Object -First 1).Trim()
+$tailnetIp = (& $tailscaleCli ip -4 | Select-Object -First 1).Trim()
 if ([string]::IsNullOrWhiteSpace($tailnetIp) -or $tailnetIp -notmatch "^100\.") {
   throw "Tailscale did not return a 100.x tailnet IPv4 address. Check that this PC is signed in and connected."
 }
@@ -47,7 +49,7 @@ if (-not (Test-Path -LiteralPath $configPath) -or -not (Test-Path -LiteralPath $
   throw "The supplied data directory must contain postgresql.conf and pg_hba.conf."
 }
 
-$encoding = New-Object System.Text.UTF8Encoding($false)
+$encoding = New-Object System.Text.UTF8Encoding -ArgumentList $false
 $backupSuffix = Get-Date -Format "yyyyMMdd-HHmmss"
 Copy-Item -LiteralPath $configPath -Destination ($configPath + ".stateflow-backup-" + $backupSuffix)
 Copy-Item -LiteralPath $hbaPath -Destination ($hbaPath + ".stateflow-backup-" + $backupSuffix)
@@ -77,7 +79,9 @@ $hbaText = $managedHba + [Environment]::NewLine + $hbaText
 $firewallRuleName = "Stateflow-PostgreSQL-Tailscale"
 $firewallRule = Get-NetFirewallRule -Name $firewallRuleName -ErrorAction SilentlyContinue
 if ($firewallRule) {
-  Set-NetFirewallRule -Name $firewallRuleName -Enabled True -RemoteAddress "100.64.0.0/10"
+  Set-NetFirewallRule -Name $firewallRuleName -Enabled True
+  Get-NetFirewallAddressFilter -AssociatedNetFirewallRule $firewallRule |
+    Set-NetFirewallAddressFilter -RemoteAddress "100.64.0.0/10"
 } else {
   New-NetFirewallRule -Name $firewallRuleName -DisplayName "Stateflow PostgreSQL over Tailscale only" -Direction Inbound -Action Allow -Protocol TCP -LocalPort $PostgresPort -RemoteAddress "100.64.0.0/10" -Profile Any | Out-Null
 }
