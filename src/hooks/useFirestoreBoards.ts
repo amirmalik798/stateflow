@@ -154,6 +154,10 @@ function serializeElementForFirestore(
  * Timestamp fields are intentionally excluded: syncElementsDiff generates a new
  * updatedAt value only after this comparison has established a real content change.
  */
+/**
+ * Compare the persisted element fields rather than JavaScript object identity.
+ * Keep in lockstep with serializeElementForFirestore; timestamps are metadata.
+ */
 export function areElementDocumentsEqual(previous: CanvasElement, next: CanvasElement): boolean {
   if (
     previous.id !== next.id ||
@@ -164,8 +168,8 @@ export function areElementDocumentsEqual(previous: CanvasElement, next: CanvasEl
     previous.locked !== next.locked
   ) return false;
 
-  const sameString = (a: string, b: string, maxLength: number) =>
-    a.slice(0, maxLength) === b.slice(0, maxLength);
+  const sameString = (a: string, b: string, max: number) =>
+    a.slice(0, max) === b.slice(0, max);
 
   switch (next.type) {
     case 'pen':
@@ -175,71 +179,56 @@ export function areElementDocumentsEqual(previous: CanvasElement, next: CanvasEl
         !sameString(previous.color, next.color, 64) ||
         previous.strokeWidth !== next.strokeWidth
       ) return false;
-
-      const a = decimatePoints(previous.points).map((point) => ({
-        x: point.x,
-        y: point.y,
-        pressure: typeof point.pressure === 'number' ? point.pressure : 0.5,
-      }));
-      const b = decimatePoints(next.points).map((point) => ({
-        x: point.x,
-        y: point.y,
-        pressure: typeof point.pressure === 'number' ? point.pressure : 0.5,
-      }));
-      return a.length === b.length && a.every((point, index) =>
-        point.x === b[index].x &&
-        point.y === b[index].y &&
-        point.pressure === b[index].pressure
-      );
+      const a = decimatePoints(previous.points);
+      const b = decimatePoints(next.points);
+      if (a.length !== b.length) return false;
+      for (let i = 0; i < a.length; i += 1) {
+        if (
+          a[i].x !== b[i].x ||
+          a[i].y !== b[i].y ||
+          (typeof a[i].pressure === 'number' ? a[i].pressure : 0.5) !==
+            (typeof b[i].pressure === 'number' ? b[i].pressure : 0.5)
+        ) return false;
+      }
+      return true;
     }
     case 'rectangle':
     case 'ellipse':
     case 'diamond':
       return previous.type === next.type &&
-        previous.x === next.x &&
-        previous.y === next.y &&
-        previous.width === next.width &&
-        previous.height === next.height &&
+        previous.x === next.x && previous.y === next.y &&
+        previous.width === next.width && previous.height === next.height &&
         sameString(previous.strokeColor, next.strokeColor, 64) &&
         sameString(previous.fillColor, next.fillColor, 64) &&
         previous.strokeWidth === next.strokeWidth;
     case 'line':
     case 'arrow':
       return previous.type === next.type &&
-        previous.x1 === next.x1 &&
-        previous.y1 === next.y1 &&
-        previous.x2 === next.x2 &&
-        previous.y2 === next.y2 &&
+        previous.x1 === next.x1 && previous.y1 === next.y1 &&
+        previous.x2 === next.x2 && previous.y2 === next.y2 &&
         sameString(previous.strokeColor, next.strokeColor, 64) &&
         previous.strokeWidth === next.strokeWidth;
     case 'sticky':
       return previous.type === 'sticky' &&
-        previous.x === next.x &&
-        previous.y === next.y &&
-        previous.width === next.width &&
-        previous.height === next.height &&
+        previous.x === next.x && previous.y === next.y &&
+        previous.width === next.width && previous.height === next.height &&
         sameString(previous.text, next.text, 8000) &&
         sameString(previous.bgColor, next.bgColor, 64) &&
         sameString(previous.textColor, next.textColor, 64);
     case 'text':
       return previous.type === 'text' &&
-        previous.x === next.x &&
-        previous.y === next.y &&
-        previous.width === next.width &&
-        previous.height === next.height &&
+        previous.x === next.x && previous.y === next.y &&
+        previous.width === next.width && previous.height === next.height &&
         sameString(previous.text, next.text, 8000) &&
         sameString(previous.color, next.color, 64) &&
         previous.fontSize === next.fontSize;
     case 'image':
       return previous.type === 'image' &&
-        previous.x === next.x &&
-        previous.y === next.y &&
-        previous.width === next.width &&
-        previous.height === next.height &&
+        previous.x === next.x && previous.y === next.y &&
+        previous.width === next.width && previous.height === next.height &&
         sameString(previous.dataUrl, next.dataUrl, 700000);
   }
 }
-
 
 function docToElement(id: string, data: Record<string, unknown>): CanvasElement {
   const type = String(data.type) as CanvasElement['type'];
