@@ -148,6 +148,105 @@ function serializeElementForFirestore(
   return base;
 }
 
+/**
+ * Compare the values that are actually persisted for an element.
+ * Ignore object/array identity so immutable state rebuilds don't trigger writes.
+ * Keep this in lockstep with serializeElementForFirestore's element fields.
+ */
+function hasElementChanged(previous: CanvasElement, next: CanvasElement): boolean {
+  if (
+    previous.id !== next.id ||
+    previous.type !== next.type ||
+    previous.zIndex !== next.zIndex ||
+    Math.min(1, Math.max(0, previous.opacity ?? 1)) !==
+      Math.min(1, Math.max(0, next.opacity ?? 1)) ||
+    previous.locked !== next.locked
+  ) {
+    return true;
+  }
+
+  switch (next.type) {
+    case 'pen':
+    case 'highlighter': {
+      if (
+        previous.type !== next.type ||
+        previous.color.slice(0, 64) !== next.color.slice(0, 64) ||
+        previous.strokeWidth !== next.strokeWidth
+      ) return true;
+
+      const previousPoints = decimatePoints(previous.points).map((point) => ({
+        x: point.x,
+        y: point.y,
+        pressure: typeof point.pressure === 'number' ? point.pressure : 0.5,
+      }));
+      const nextPoints = decimatePoints(next.points).map((point) => ({
+        x: point.x,
+        y: point.y,
+        pressure: typeof point.pressure === 'number' ? point.pressure : 0.5,
+      }));
+      return !arePointListsEqual(previousPoints, nextPoints);
+    }
+    case 'rectangle':
+    case 'ellipse':
+    case 'diamond':
+      return previous.type !== next.type ||
+        previous.x !== next.x ||
+        previous.y !== next.y ||
+        previous.width !== next.width ||
+        previous.height !== next.height ||
+        previous.strokeColor.slice(0, 64) !== next.strokeColor.slice(0, 64) ||
+        previous.fillColor.slice(0, 64) !== next.fillColor.slice(0, 64) ||
+        previous.strokeWidth !== next.strokeWidth;
+    case 'line':
+    case 'arrow':
+      return previous.type !== next.type ||
+        previous.x1 !== next.x1 ||
+        previous.y1 !== next.y1 ||
+        previous.x2 !== next.x2 ||
+        previous.y2 !== next.y2 ||
+        previous.strokeColor.slice(0, 64) !== next.strokeColor.slice(0, 64) ||
+        previous.strokeWidth !== next.strokeWidth;
+    case 'sticky':
+      return previous.type !== 'sticky' ||
+        previous.x !== next.x ||
+        previous.y !== next.y ||
+        previous.width !== next.width ||
+        previous.height !== next.height ||
+        previous.text.slice(0, 8000) !== next.text.slice(0, 8000) ||
+        previous.bgColor.slice(0, 64) !== next.bgColor.slice(0, 64) ||
+        previous.textColor.slice(0, 64) !== next.textColor.slice(0, 64);
+    case 'text':
+      return previous.type !== 'text' ||
+        previous.x !== next.x ||
+        previous.y !== next.y ||
+        previous.width !== next.width ||
+        previous.height !== next.height ||
+        previous.text.slice(0, 8000) !== next.text.slice(0, 8000) ||
+        previous.color.slice(0, 64) !== next.color.slice(0, 64) ||
+        previous.fontSize !== next.fontSize;
+    case 'image':
+      return previous.type !== 'image' ||
+        previous.x !== next.x ||
+        previous.y !== next.y ||
+        previous.width !== next.width ||
+        previous.height !== next.height ||
+        previous.dataUrl.slice(0, 700000) !== next.dataUrl.slice(0, 700000);
+  }
+}
+
+function arePointListsEqual(
+  previous: Array<{ x: number; y: number; pressure: number }>,
+  next: Array<{ x: number; y: number; pressure: number }>
+): boolean {
+  if (previous.length !== next.length) return false;
+  for (let index = 0; index < previous.length; index += 1) {
+    const a = previous[index];
+    const b = next[index];
+    if (a.x !== b.x || a.y !== b.y || a.pressure !== b.pressure) return false;
+  }
+  return true;
+}
+
 function docToElement(id: string, data: Record<string, unknown>): CanvasElement {
   const type = String(data.type) as CanvasElement['type'];
   const base = {
@@ -444,7 +543,7 @@ export function useFirestoreBoards(user: User | null, isReadOnly: boolean) {
         const old = prevMap.get(el.id);
         if (!old) {
           toWrite.push({ el, isCreate: true });
-        } else if (old !== el) {
+        } else if (hasElementChanged(old, el)) {
           toWrite.push({ el, isCreate: false });
         }
       }
