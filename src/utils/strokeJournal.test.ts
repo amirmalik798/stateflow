@@ -50,7 +50,7 @@ describe('stroke journal coalescing', () => {
     expect(result?.createdAtMs).toBe(100);
   });
 
-  it('cancels a pending delete when undo restores an already-synced stroke', () => {
+  it('restores a deleted synced stroke with its original creation timestamp', () => {
     const pendingDelete = entry('delete', { requiresCreate: false });
     const result = coalesceStrokeJournalEntry(
       pendingDelete,
@@ -61,7 +61,8 @@ describe('stroke journal coalescing', () => {
       200
     );
 
-    expect(result).toBeNull();
+    expect(result?.operation).toBe('upsert');
+    expect(result?.createdAtMs).toBe(100);
   });
 
   it('restores a pending create after undo/redo without changing its creation timestamp', () => {
