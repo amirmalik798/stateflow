@@ -35,6 +35,7 @@ const LOGIN_LOCKOUT_MS = 15 * 60 * 1000;
 
 interface LoginAttemptBucket { windowStartedAt: number; attempts: number; blockedUntil: number; }
 const loginAttemptBuckets = new Map<string, LoginAttemptBucket>();
+let databaseSchemaReady = false;
 
 function constantTimeStringEquals(left: string, right: string): boolean {
   const leftDigest = createHash('sha256').update(left).digest();
@@ -74,6 +75,7 @@ export async function initializeDatabase(): Promise<void> {
   if (!pool) throw new Error('DATABASE_URL is required for the Stateflow sync backend.');
   const schema = await readFile(new URL('../db/schema.sql', import.meta.url), 'utf8');
   await pool.query(schema);
+  databaseSchemaReady = true;
 }
 
 function appOrigin(req: Request): string {
@@ -128,6 +130,10 @@ export async function getSessionUserId(cookieHeader: string | undefined): Promis
 function requireDatabase(_req: Request, res: Response, next: NextFunction): void {
   if (!pool) {
     res.status(503).json({ error: 'Stateflow backend is not configured. DATABASE_URL is missing.' });
+    return;
+  }
+  if (!databaseSchemaReady) {
+    res.status(503).json({ error: 'Stateflow is connecting to its database. Please retry shortly.' });
     return;
   }
   next();
