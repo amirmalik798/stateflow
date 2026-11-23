@@ -26,6 +26,10 @@ import {
   ToolType,
 } from '../types/whiteboard';
 import { STICKY_COLORS } from '../constants/palette';
+import {
+  hasStylusContact as hasStylusTipContact,
+  isStylusEraserActive,
+} from '../utils/stylusInput';
 
 interface WhiteboardCanvasProps {
   elements: CanvasElement[];
@@ -62,7 +66,14 @@ type InteractionMode =
       moved: boolean;
     }
   | { kind: 'pinch'; prevDist: number; prevMid: Point }
-  | { kind: 'draw-stroke'; draft: StrokeElement; lastTime: number; lastPoint: Point }
+  | {
+      kind: 'draw-stroke';
+      draft: StrokeElement;
+      lastTime: number;
+      lastPoint: Point;
+      /** Base snapshot for a stroke resumed immediately after releasing the S Pen eraser button. */
+      baseElements?: CanvasElement[];
+    }
   | { kind: 'draw-shape'; startWorld: Point; draft: CanvasElement }
   | {
       kind: 'erase';
@@ -91,14 +102,16 @@ interface TrackedPointer {
   pointerType: string;
 }
 
+function isStylusPointerType(pointerType: string): boolean {
+  return pointerType === 'pen' || pointerType === 'eraser';
+}
+
 function isStylusEraserPressed(e: React.PointerEvent<HTMLCanvasElement>): boolean {
-  const pt = e.pointerType as string;
-  if (pt === 'eraser') return true;
-  // W3C Pointer Events / Android Chromium maps S Pen barrel button to bit 32 (button 5)
-  // and some browsers/OEM stacks map it to secondary button bit 2 (button 2).
-  if ((e.buttons & 32) !== 0 || e.button === 5) return true;
-  if (pt === 'pen' && ((e.buttons & 2) !== 0 || e.button === 2)) return true;
-  return false;
+  return isStylusEraserActive(e.pointerType, e.buttons);
+}
+
+function hasStylusContact(e: React.PointerEvent<HTMLCanvasElement>): boolean {
+  return hasStylusTipContact(e.pointerType, e.buttons, e.pressure);
 }
 
 export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
@@ -135,6 +148,9 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
   const spaceDownRef = useRef(false);
   const lastTapRef = useRef<{ time: number; id: string } | null>(null);
   const rafRef = useRef<number | null>(null);
+  // Tracks a side-button press that starts while the S Pen is hovering. Some browsers
+  // report the subsequent tip contact as pointermove instead of a second pointerdown.
+  const pendingStylusEraserRef = useRef<Set<number>>(new Set());
 
   const propsRef = useRef({
     elements,
@@ -259,6 +275,44 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
   const makeId = (prefix: string) =>
     `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 
+  const beginEraseGesture = (
+    world: Point,
+    sourceElements: CanvasElement[],
+    cam: Camera,
+    cfg: ToolSettings
+  ) => {
+    const hit = [...sourceElements]
+      .sort((a, b) => b.zIndex - a.zIndex)
+      .find((el) => !el.locked && hitTestElement(el, world.x, world.y, cam.zoom));
+    const workingElements = hit
+      ? sourceElements.filter((element) => element.id !== hit.id)
+      : sourceElements;
+
+    if (hit) onElementsChange(workingElements, false);
+    hoverCursorRef.current = {
+      x: world.x,
+      y: world.y,
+      radius: 14 / cam.zoom,
+      isEraser: true,
+      color: cfg.strokeColor,
+    };
+    eraserTrailRef.current = [world];
+    modeRef.current = {
+      kind: 'erase',
+      workingElements,
+      erasedAny: Boolean(hit),
+      trail: [world],
+    };
+    onLocalCursorChange?.({
+      x: world.x,
+      y: world.y,
+      color: cfg.strokeColor,
+      active: true,
+      tool: 'eraser',
+    });
+    scheduleRender();
+  };
+
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -275,6 +329,44 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
     // Palm rejection: ignore touch events while actively drawing/editing with stylus or mouse
     if (e.pointerType === 'touch' && activePenOrMouseGesture) {
       return;
+    }
+
+    const initialProps = propsRef.current;
+    const stylusPointer = isStylusPointerType(e.pointerType);
+    const stylusEraser = isStylusEraserPressed(e);
+    const stylusContact = hasStylusContact(e);
+
+    // Samsung Notes activates its eraser while the S Pen button is held in hover.
+    // Record that intent, but never erase until the tip actually touches the canvas.
+    if (!initialProps.isReadOnly && stylusPointer && stylusEraser && !stylusContact) {
+      pendingStylusEraserRef.current.add(e.pointerId);
+      const rect = canvas.getBoundingClientRect();
+      const world = screenToWorld(
+        e.clientX - rect.left,
+        e.clientY - rect.top,
+        initialProps.camera,
+        rect.width,
+        rect.height
+      );
+      hoverCursorRef.current = {
+        x: world.x,
+        y: world.y,
+        radius: 14 / initialProps.camera.zoom,
+        isEraser: true,
+        color: initialProps.settings.strokeColor,
+      };
+      onLocalCursorChange?.({
+        x: world.x,
+        y: world.y,
+        color: initialProps.settings.strokeColor,
+        active: false,
+        tool: 'eraser',
+      });
+      scheduleRender();
+      return;
+    }
+    if (stylusPointer && stylusContact) {
+      pendingStylusEraserRef.current.delete(e.pointerId);
     }
 
     canvas.setPointerCapture(e.pointerId);
@@ -321,13 +413,12 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
     onCanvasInteract?.();
 
     const forcePanByTouch = e.pointerType === 'touch' && !allowFingerDraw;
-    const stylusEraser = isStylusEraserPressed(e);
-    const effectiveTool: ToolType = stylusEraser ? 'eraser' : tool;
+    const effectiveTool: ToolType =
+      stylusEraser && stylusContact ? 'eraser' : tool;
 
     // When Finger Draw is OFF (default), finger touch dragging ALWAYS moves the camera
     // (never writes/draws/erases), alongside read-only mode, middle mouse, Spacebar, or Pan tool.
     if (readOnly || forcePanByTouch || e.button === 1 || spaceDownRef.current || effectiveTool === 'pan') {
-      if (readOnly) onUserPanOrZoom?.();
       modeRef.current = {
         kind: 'pan',
         startScreen: { x: sx, y: sy },
@@ -372,31 +463,7 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
     }
 
     if (effectiveTool === 'eraser') {
-      const hit = [...els]
-        .sort((a, b) => b.zIndex - a.zIndex)
-        .find((el) => !el.locked && hitTestElement(el, world.x, world.y, cam.zoom));
-      let workingElements = els;
-      let erasedAny = false;
-      if (hit) {
-        erasedAny = true;
-        workingElements = els.filter((el) => el.id !== hit.id);
-        onElementsChange(workingElements, false);
-      }
-      hoverCursorRef.current = {
-        x: world.x,
-        y: world.y,
-        radius: 14 / cam.zoom,
-        isEraser: true,
-        color: cfg.strokeColor,
-      };
-      eraserTrailRef.current = [world];
-      modeRef.current = {
-        kind: 'erase',
-        workingElements,
-        erasedAny,
-        trail: [world],
-      };
-      scheduleRender();
+      beginEraseGesture(world, els, cam, cfg);
       return;
     }
 
@@ -571,8 +638,16 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
       settings: cfg,
     } = propsRef.current;
 
+    const stylusPointer = isStylusPointerType(e.pointerType);
     const stylusEraser = isStylusEraserPressed(e);
+    const stylusContact = hasStylusContact(e);
     const hoverTool: ToolType = stylusEraser ? 'eraser' : tool;
+
+    if (!readOnly && stylusPointer && stylusEraser && !stylusContact) {
+      pendingStylusEraserRef.current.add(e.pointerId);
+    } else if (stylusPointer && !stylusEraser) {
+      pendingStylusEraserRef.current.delete(e.pointerId);
+    }
 
     // Hover preview & live cursor streaming for stylus / mouse even before pressing down
     if (!readOnly && e.pointerType !== 'touch') {
@@ -604,7 +679,34 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
       }
     }
 
-    const tracked = pointersRef.current.get(e.pointerId);
+    let tracked = pointersRef.current.get(e.pointerId);
+    if (
+      !tracked &&
+      !readOnly &&
+      stylusPointer &&
+      stylusEraser &&
+      stylusContact &&
+      pendingStylusEraserRef.current.has(e.pointerId)
+    ) {
+      // Some Android browsers expose tip contact after a hover-button press as pointermove.
+      // Capture that now so the whole erase drag remains a single gesture.
+      pendingStylusEraserRef.current.delete(e.pointerId);
+      try {
+        canvas.setPointerCapture(e.pointerId);
+      } catch {
+        // The pointer may have ended between the event and capture; ignore and let the next
+        // pointerdown establish the gesture if the browser requires one.
+      }
+      pointersRef.current.set(e.pointerId, {
+        point: { x: sx, y: sy },
+        pointerType: e.pointerType,
+      });
+      tracked = pointersRef.current.get(e.pointerId);
+      onCanvasInteract?.();
+      const world = screenToWorld(sx, sy, cam, rect.width, rect.height);
+      beginEraseGesture(world, els, cam, cfg);
+      return;
+    }
     if (!tracked) return;
 
     pointersRef.current.set(e.pointerId, {
@@ -641,6 +743,105 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
       return;
     }
 
+    const world = screenToWorld(sx, sy, cam, rect.width, rect.height);
+
+    // The side button temporarily overrides the selected phone tool. Finish the current
+    // gesture cleanly, then erase regardless of whether the selected tool is pen, shape,
+    // select, or pan.
+    if (!readOnly && stylusPointer && stylusEraser && stylusContact && mode.kind !== 'erase') {
+      let eraseBaseElements = els;
+
+      if (mode.kind === 'draw-stroke') {
+        const previousElements = mode.baseElements ?? els;
+        if (mode.draft.points.length > 0) {
+          eraseBaseElements = [...previousElements, mode.draft];
+          onElementsChange(eraseBaseElements, true);
+        }
+        draftRef.current = null;
+        onDraftChange?.(null);
+      } else if (mode.kind === 'draw-shape') {
+        const draft = mode.draft;
+        const valid =
+          (draft.type === 'line' || draft.type === 'arrow')
+            ? Math.hypot(draft.x2 - draft.x1, draft.y2 - draft.y1) > 8
+            : (draft.type === 'rectangle' || draft.type === 'ellipse' || draft.type === 'diamond')
+              ? draft.width > 8 && draft.height > 8
+              : false;
+        if (valid) {
+          eraseBaseElements = [...els, draft];
+          onElementsChange(eraseBaseElements, true);
+        }
+        draftRef.current = null;
+        onDraftChange?.(null);
+      } else if (
+        (mode.kind === 'move' && mode.moved) ||
+        (mode.kind === 'resize' && mode.resized)
+      ) {
+        onElementsChange(els, true);
+      }
+
+      marqueeRef.current = null;
+      eraserTrailRef.current = [];
+      beginEraseGesture(world, eraseBaseElements, cam, cfg);
+      return;
+    }
+
+    // Releasing the S Pen button ends the temporary erase gesture and restores the
+    // selected ink tool. The next points are a fresh stroke based on the erased snapshot.
+    if (
+      mode.kind === 'erase' &&
+      e.pointerType === 'pen' &&
+      !stylusEraser &&
+      stylusContact &&
+      tool !== 'eraser'
+    ) {
+      if (mode.erasedAny) onElementsChange(mode.workingElements, true);
+      eraserTrailRef.current = [];
+
+      if (tool === 'pen' || tool === 'highlighter') {
+        const pressure = e.pressure > 0 ? e.pressure : 0.5;
+        const draft: StrokeElement = {
+          id: makeId(tool),
+          type: tool,
+          points: [{ x: world.x, y: world.y, pressure }],
+          color: tool === 'highlighter' ? cfg.highlighterColor : cfg.strokeColor,
+          strokeWidth: tool === 'highlighter' ? cfg.highlighterWidth : cfg.strokeWidth,
+          opacity: 1,
+          zIndex: nextZIndex(mode.workingElements),
+        };
+        draftRef.current = draft;
+        onDraftChange?.(draft);
+        modeRef.current = {
+          kind: 'draw-stroke',
+          draft,
+          lastTime: performance.now(),
+          lastPoint: world,
+          baseElements: mode.workingElements,
+        };
+        hoverCursorRef.current = {
+          x: world.x,
+          y: world.y,
+          radius: (tool === 'highlighter' ? cfg.highlighterWidth : cfg.strokeWidth) / 2,
+          isEraser: false,
+          color: tool === 'highlighter' ? cfg.highlighterColor : cfg.strokeColor,
+        };
+        onLocalCursorChange?.({
+          x: world.x,
+          y: world.y,
+          color: tool === 'highlighter' ? cfg.highlighterColor : cfg.strokeColor,
+          active: true,
+          tool,
+        });
+      } else {
+        modeRef.current = { kind: 'none' };
+        draftRef.current = null;
+        hoverCursorRef.current = null;
+        onLocalCursorChange?.(null);
+      }
+      scheduleRender();
+      return;
+    }
+
     if (mode.kind === 'pan') {
       const dxScreen = sx - mode.startScreen.x;
       const dyScreen = sy - mode.startScreen.y;
@@ -666,7 +867,6 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
 
     if (readOnly) return;
 
-    const world = screenToWorld(sx, sy, cam, rect.width, rect.height);
     if (e.pointerType === 'touch') {
       onLocalCursorChange?.({
         x: world.x,
@@ -678,41 +878,6 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
     }
 
     if (mode.kind === 'draw-stroke') {
-      // Handle S Pen barrel button pressed just after tip touched screen
-      if (stylusEraser) {
-        let workingElements = els;
-        if (mode.draft.points.length > 6) {
-          workingElements = [...els, mode.draft];
-          onElementsChange(workingElements, true);
-        }
-        draftRef.current = null;
-        onDraftChange?.(null);
-
-        const remaining = workingElements.filter(
-          (el) => el.locked || !hitTestElement(el, world.x, world.y, cam.zoom)
-        );
-        const erasedAny = remaining.length !== workingElements.length;
-        if (erasedAny) {
-          onElementsChange(remaining, false);
-        }
-        hoverCursorRef.current = {
-          x: world.x,
-          y: world.y,
-          radius: 14 / cam.zoom,
-          isEraser: true,
-          color: cfg.strokeColor,
-        };
-        eraserTrailRef.current = [world];
-        modeRef.current = {
-          kind: 'erase',
-          workingElements: remaining,
-          erasedAny,
-          trail: [world],
-        };
-        scheduleRender();
-        return;
-      }
-
       const dist = Math.hypot(world.x - mode.lastPoint.x, world.y - mode.lastPoint.y);
       if (dist < 1.5 / cam.zoom) return;
 
@@ -836,7 +1001,10 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
   };
 
   const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!pointersRef.current.has(e.pointerId)) return;
+    pendingStylusEraserRef.current.delete(e.pointerId);
+    if (!pointersRef.current.has(e.pointerId)) {
+      return;
+    }
     pointersRef.current.delete(e.pointerId);
 
     const mode = modeRef.current;
@@ -926,7 +1094,7 @@ export const WhiteboardCanvas: React.FC<WhiteboardCanvasProps> = ({
       } else if (mode.kind === 'draw-stroke') {
         draftRef.current = null;
         if (mode.draft.points.length > 0) {
-          onElementsChange([...els, mode.draft], true);
+          onElementsChange([...(mode.baseElements ?? els), mode.draft], true);
         }
         onDraftChange?.(null);
       } else if (mode.kind === 'draw-shape') {

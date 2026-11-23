@@ -31,6 +31,8 @@ import {
   ToolType,
 } from './types/whiteboard';
 
+const FOLLOW_MODE_STORAGE_KEY = 'stateflow-desktop-follow';
+
 export default function App() {
   const { isReadOnly } = useDeviceMode();
   const [user, setUser] = useState<SessionUser | null>(null);
@@ -99,9 +101,17 @@ export default function App() {
     cursor: RemoteCursor | null;
   } | null>(null);
 
-  const [followPhone, setFollowPhone] = useState<boolean>(true);
-  const followPhoneRef = useRef<boolean>(true);
+  const [followPhone, setFollowPhoneState] = useState<boolean>(() => {
+    return localStorage.getItem(FOLLOW_MODE_STORAGE_KEY) !== 'false';
+  });
+  const followPhoneRef = useRef<boolean>(followPhone);
   followPhoneRef.current = followPhone;
+
+  const updateFollowPhone = useCallback((next: boolean) => {
+    followPhoneRef.current = next;
+    localStorage.setItem(FOLLOW_MODE_STORAGE_KEY, String(next));
+    setFollowPhoneState(next);
+  }, []);
 
   const [zenMode, setZenMode] = useState<boolean>(false);
   const [fingerDrawEnabled, setFingerDrawEnabled] = useState<boolean>(() => {
@@ -350,16 +360,51 @@ export default function App() {
 
   const activeBoardMeta = boards.find((b) => b.id === activeBoardId) ?? boards[0] ?? null;
 
-  // Enter desktop viewing in Follow mode whenever the device switches into read-only mode.
-  // Manual panning/zooming still exits Follow until the next desktop-mode entry.
+  // Desktop starts in Follow mode. A user can still explicitly switch to Snap/free-explore.
   useEffect(() => {
     if (!isReadOnly) return;
-    setFollowPhone(true);
+    updateFollowPhone(true);
     const latestFrame = lastRemoteViewportRef.current;
     if (latestFrame && latestFrame.boardId === activeBoardIdRef.current) {
       setOptimisticCamera({ boardId: latestFrame.boardId, camera: latestFrame.frame.camera });
     }
-  }, [isReadOnly]);
+  }, [isReadOnly, updateFollowPhone]);
+
+  // Browsers may suspend a background tab and restore it without remounting React.
+  // Re-apply the saved Follow preference on focus, visibility restoration, and BFCache pageshow.
+  useEffect(() => {
+    if (!isReadOnly) return;
+
+    const restoreFollowAfterResume = () => {
+      if (document.visibilityState !== 'visible') return;
+      const shouldFollow = localStorage.getItem(FOLLOW_MODE_STORAGE_KEY) !== 'false';
+      updateFollowPhone(shouldFollow);
+      if (!shouldFollow || !activeBoardMeta) return;
+
+      const latestFrame = lastRemoteViewportRef.current;
+      const camera =
+        latestFrame && latestFrame.boardId === activeBoardMeta.id
+          ? latestFrame.frame.camera
+          : activeBoardMeta.camera;
+      setOptimisticCamera({ boardId: activeBoardMeta.id, camera });
+    };
+
+    window.addEventListener('focus', restoreFollowAfterResume);
+    window.addEventListener('pageshow', restoreFollowAfterResume);
+    document.addEventListener('visibilitychange', restoreFollowAfterResume);
+    return () => {
+      window.removeEventListener('focus', restoreFollowAfterResume);
+      window.removeEventListener('pageshow', restoreFollowAfterResume);
+      document.removeEventListener('visibilitychange', restoreFollowAfterResume);
+    };
+  }, [
+    isReadOnly,
+    activeBoardMeta?.id,
+    activeBoardMeta?.camera.x,
+    activeBoardMeta?.camera.y,
+    activeBoardMeta?.camera.zoom,
+    updateFollowPhone,
+  ]);
 
   // Reset desktop optimistic camera from Firestore only when following phone & no recent WS camera arrived
   useEffect(() => {
@@ -853,18 +898,16 @@ export default function App() {
   };
 
   const handleToggleFollowPhone = () => {
-    setFollowPhone((prev) => {
-      const next = !prev;
-      if (next && activeBoard) {
-        const snapCam =
-          lastRemoteViewportRef.current &&
-          lastRemoteViewportRef.current.boardId === activeBoard.id
-            ? lastRemoteViewportRef.current.frame.camera
-            : activeBoardMeta?.camera ?? activeBoard.camera;
-        setOptimisticCamera({ boardId: activeBoard.id, camera: snapCam });
-      }
-      return next;
-    });
+    const next = !followPhoneRef.current;
+    updateFollowPhone(next);
+    if (next && activeBoard) {
+      const snapCam =
+        lastRemoteViewportRef.current &&
+        lastRemoteViewportRef.current.boardId === activeBoard.id
+          ? lastRemoteViewportRef.current.frame.camera
+          : activeBoardMeta?.camera ?? activeBoard.camera;
+      setOptimisticCamera({ boardId: activeBoard.id, camera: snapCam });
+    }
   };
 
   const effectiveSyncStatus = isOnline
@@ -928,7 +971,7 @@ export default function App() {
         onFingerPanHint={handleFingerPanHint}
         onUserPanOrZoom={() => {
           if (isReadOnly && followPhoneRef.current) {
-            setFollowPhone(false);
+            updateFollowPhone(false);
           }
         }}
         onSelectIds={setSelectedIds}
@@ -942,25 +985,25 @@ export default function App() {
         <ZoomControls
           zoom={activeBoard.camera.zoom}
           onZoomIn={() => {
-            if (isReadOnly) setFollowPhone(false);
+            if (isReadOnly) updateFollowPhone(false);
             handleCameraChange({
               ...activeBoard.camera,
               zoom: Math.min(5, activeBoard.camera.zoom * 1.25),
             });
           }}
           onZoomOut={() => {
-            if (isReadOnly) setFollowPhone(false);
+            if (isReadOnly) updateFollowPhone(false);
             handleCameraChange({
               ...activeBoard.camera,
               zoom: Math.max(0.1, activeBoard.camera.zoom / 1.25),
             });
           }}
           onResetZoom={() => {
-            if (isReadOnly) setFollowPhone(false);
+            if (isReadOnly) updateFollowPhone(false);
             handleCameraChange({ x: 0, y: 0, zoom: 1 });
           }}
           onFitContent={() => {
-            if (isReadOnly) setFollowPhone(false);
+            if (isReadOnly) updateFollowPhone(false);
             handleFitContent();
           }}
         />
