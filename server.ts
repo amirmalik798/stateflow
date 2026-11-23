@@ -4,7 +4,6 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocket, WebSocketServer } from 'ws';
 import { getSessionUserId, initializeDatabase, pool, registerApi } from './server/api';
-import { startSocksTcpForwarder } from './server/socksTcpForwarder';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -214,19 +213,6 @@ server.on('close', () => {
 
 async function start() {
   const isProd = process.env.NODE_ENV === 'production';
-
-  const tailnetDatabaseHost = process.env.PG_TAILSCALE_TARGET_HOST?.trim();
-  if (tailnetDatabaseHost) {
-    await startSocksTcpForwarder({
-      targetHost: tailnetDatabaseHost,
-      targetPort: Number(process.env.PG_TAILSCALE_TARGET_PORT) || 5432,
-      listenHost: '127.0.0.1',
-      listenPort: Number(process.env.PG_TAILSCALE_LOCAL_PORT) || 15432,
-      proxyHost: '127.0.0.1',
-      proxyPort: Number(process.env.PG_TAILSCALE_SOCKS_PORT) || 1055,
-    });
-    console.log('Stateflow PostgreSQL Tailscale forwarder listening on loopback.');
-  }
 
   if (pool) {
     void tryInitializeDatabase();

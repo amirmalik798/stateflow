@@ -97,8 +97,12 @@ export function onSessionChanged(listener: AuthListener): () => void {
   return () => listeners.delete(listener);
 }
 
-export function signInWithGoogle(): void {
-  window.location.assign('/api/auth/google');
+export async function signInWithPassword(loginId: string, password: string): Promise<void> {
+  const { user } = await request<{ user: SessionUser }>('/api/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ loginId, password }),
+  });
+  publish(user);
 }
 
 export async function signOutUser(): Promise<void> {
