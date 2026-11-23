@@ -14,7 +14,7 @@
 4. **Identity spoofing on create**: User B creating `/boards/board-b1` with `ownerId: "userA"`: Must return `PERMISSION_DENIED`.
 5. **Shadow / ghost field injection**: Creating a board with an extra field `{ isAdmin: true }`: Must return `PERMISSION_DENIED`.
 6. **ID poisoning**: Creating `/boards/bad..id..with..slashes` or a 300-char ID: Must return `PERMISSION_DENIED`.
-7. **Client-forged timestamp**: Creating or updating a board with `updatedAt` set to a past client timestamp instead of `request.time`: Must return `PERMISSION_DENIED`. Board and workspace timestamps remain server-enforced. Element `createdAt` must be a timestamp no later than `request.time` and is immutable after creation so locally journaled stroke retries are idempotent.
+7. **Client-forged timestamp**: Creating or updating a board with `updatedAt` set to a past client timestamp instead of `request.time`: Must return `PERMISSION_DENIED`. Board and workspace timestamps remain server-enforced. Element `createdAt` must be a timestamp and is immutable after creation so locally journaled stroke retries are idempotent.
 8. **Immutable field mutation**: Updating `ownerId` or `createdAt` or `boardId` on an existing board or element: Must return `PERMISSION_DENIED`.
 9. **Value poisoning on whitelisted update key**: Updating `camera` to `{ x: "NaN", y: 0, zoom: 999 }` or `title` to a 500-char string: Must return `PERMISSION_DENIED`.
 10. **Orphaned element write**: Creating `/boards/nonexistent/elements/el-1` where parent board does not exist or belongs to another user: Must return `PERMISSION_DENIED`.
