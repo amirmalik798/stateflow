@@ -211,8 +211,8 @@ async function applyOperation(
 ): Promise<number> {
   await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [operation.operationId]);
   const duplicate = await client.query(
-    'SELECT sequence FROM board_operations WHERE operation_id = $1',
-    [operation.operationId]
+    'SELECT sequence FROM board_operations WHERE operation_id = $1 AND user_id = $2 AND device_id = $3',
+    [operation.operationId, userId, operation.deviceId]
   );
   if (duplicate.rows[0]) return Number(duplicate.rows[0].sequence);
 
@@ -221,10 +221,11 @@ async function applyOperation(
       throw new Error('Board operation identifiers do not match.');
     }
     if (operation.action === 'delete') {
-      await client.query(
-        'UPDATE boards SET deleted_at = COALESCE(deleted_at, now()), version = version + 1, updated_at = now() WHERE id = $1 AND user_id = $2',
+      const deleted = await client.query(
+        'UPDATE boards SET deleted_at = COALESCE(deleted_at, now()), version = version + 1, updated_at = now() WHERE id = $1 AND user_id = $2 RETURNING id',
         [operation.entityId, userId]
       );
+      if (!deleted.rowCount) throw new Error('Board is not available to this account.');
       authorizedBoards.delete(operation.boardId);
     } else {
       const payload = operation.payload;
@@ -481,6 +482,8 @@ export function registerApi(app: Express, broadcast: Broadcast): void {
     const boardBroadcasts = new Map<string, Record<string, unknown>>();
     try {
       await client.query('BEGIN');
+      // Serialize sequence allocation and commit order per account so pull cursors cannot skip a late commit.
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [req.stateflowUserId]);
       const device = await client.query(
         'SELECT id FROM devices WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL FOR UPDATE',
         [body.deviceId, req.stateflowUserId]
@@ -589,6 +592,14 @@ export function registerApi(app: Express, broadcast: Broadcast): void {
       return;
     }
     try {
+      const maximum = await pool.query(
+        'SELECT COALESCE(MAX(sequence), 0) AS sequence FROM board_operations WHERE user_id = $1',
+        [req.stateflowUserId]
+      );
+      if (Number(body.sequence) > Number(maximum.rows[0]?.sequence ?? 0)) {
+        res.status(400).json({ error: 'The synchronization cursor is ahead of the server history.' });
+        return;
+      }
       const result = await pool.query(
         'INSERT INTO device_sync_cursors (device_id, user_id, last_sequence) ' +
         'SELECT id, user_id, $3 FROM devices WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL ' +

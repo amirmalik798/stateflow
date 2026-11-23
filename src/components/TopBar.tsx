@@ -252,7 +252,7 @@ export const TopBar: React.FC<TopBarProps> = ({
             type="button"
             onClick={onSaveNow}
             disabled={pendingChangeCount === 0 || strokeSyncStatus === 'syncing' || strokeSyncStatus === 'offline'}
-            aria-label={pendingChangeCount > 0 ? `Save ${pendingChangeCount} pending changes to the server` : 'All strokes are saved to cloud'}
+            aria-label={pendingChangeCount > 0 ? `Save ${pendingChangeCount} pending changes to the server` : 'All changes are synchronized'}
             title={
               strokeSyncStatus === 'syncing'
                 ? 'Saving changes to Stateflow…'

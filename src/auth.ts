@@ -73,9 +73,15 @@ export async function getCurrentSessionUser(): Promise<SessionUser | null> {
     .catch((error) => {
       initialized = true;
       const saved = currentUser ?? cachedUser();
-      if (!navigator.onLine && saved) {
+      const message = error instanceof Error ? error.message : String(error);
+      const rejectedSession = message.includes('(401)');
+      if (saved && !rejectedSession) {
         currentUser = saved;
         return saved;
+      }
+      if (rejectedSession) {
+        currentUser = null;
+        try { localStorage.removeItem(SESSION_PROFILE_KEY); } catch { /* ignore */ }
       }
       throw error;
     })

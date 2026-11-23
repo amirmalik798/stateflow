@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { ArrowRight, Layers, Monitor, Moon, PenTool, Smartphone, Sun, Zap } from 'lucide-react';
-import { signInWithGoogle } from '../firebase';
+import { signInWithGoogle } from '../auth';
 import { ThemeMode } from '../types/whiteboard';
 
 interface AuthGateProps {
@@ -78,7 +78,7 @@ export const AuthGate: React.FC<AuthGateProps> = ({ isReadOnly, theme, onToggleT
           <section className="lg:col-span-7 space-y-6">
             <div className="space-y-3">
               <p className="text-xs font-semibold tracking-wide text-blue-600 dark:text-blue-400">
-                Infinite Cloud Whiteboard
+                Infinite Whiteboard
               </p>
               <h1 className="text-3xl sm:text-4xl lg:text-[2.65rem] font-bold tracking-tight text-slate-900 dark:text-white leading-[1.14] text-balance max-w-xl">
                 Sketch on your phone. Present live on desktop.
@@ -378,7 +378,7 @@ export const AuthGate: React.FC<AuthGateProps> = ({ isReadOnly, theme, onToggleT
           Developed by: Amir Malik (2026)
         </span>
         <span>
-          SlateFlow · Infinite Cloud Whiteboard
+          SlateFlow · Infinite Whiteboard
         </span>
       </footer>
     </div>
