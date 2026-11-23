@@ -3,27 +3,57 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocket, WebSocketServer } from 'ws';
+import { getSessionUserId, initializeDatabase, pool, registerApi } from './server/api';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
+app.set('trust proxy', 1);
+app.use(express.json({ limit: '20mb' }));
 const server = http.createServer(app);
 const wss = new WebSocketServer({
   noServer: true,
   perMessageDeflate: false,
+  maxPayload: 2 * 1024 * 1024,
 });
 
 server.on('upgrade', (req, socket, head) => {
   const pathname = new URL(req.url || '/', 'http://localhost').pathname;
-  if (pathname === '/ws') {
-    wss.handleUpgrade(req, socket, head, (ws) => {
-      wss.emit('connection', ws, req);
-    });
+  if (pathname !== '/ws') {
+    socket.destroy();
+    return;
   }
+
+  const origin = req.headers.origin;
+  const forwardedProto = String(req.headers['x-forwarded-proto'] || (process.env.NODE_ENV === 'production' ? 'https' : 'http')).split(',')[0].trim();
+  const host = req.headers.host;
+  const expectedOrigin = process.env.APP_ORIGIN ? new URL(process.env.APP_ORIGIN).origin : (host ? forwardedProto + '://' + host : null);
+  if (!origin || !expectedOrigin || new URL(origin).origin !== expectedOrigin) {
+    socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+
+  void getSessionUserId(req.headers.cookie)
+    .then((userId) => {
+      if (!userId) {
+        socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
+        socket.destroy();
+        return;
+      }
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        (ws as RelaySocket).uid = userId;
+        wss.emit('connection', ws, req);
+      });
+    })
+    .catch((error) => {
+      console.error('WebSocket session authentication failed.', error);
+      socket.destroy();
+    });
 });
 
-// Disable Nagle's algorithm so small live stroke & camera packets flush immediately
+// Disable Nagle's algorithm so live stroke packets flush immediately.
 server.on('connection', (socket) => {
   socket.setNoDelay(true);
 });
@@ -53,16 +83,20 @@ function getUidCache(uid: string): UidRelayCache {
 function broadcastToUid(uid: string, rawMsg: string, excludeClientId?: string) {
   if (!uid) return;
   for (const client of wss.clients) {
-    const c = client as RelaySocket;
+    const target = client as RelaySocket;
     if (
-      c.readyState === WebSocket.OPEN &&
-      c.uid === uid &&
-      (!excludeClientId || c.clientId !== excludeClientId)
+      target.readyState === WebSocket.OPEN &&
+      target.uid === uid &&
+      (!excludeClientId || target.clientId !== excludeClientId)
     ) {
-      c.send(rawMsg);
+      target.send(rawMsg);
     }
   }
 }
+
+registerApi(app, (uid, message) => {
+  broadcastToUid(uid, JSON.stringify({ ...message, clientId: 'sync-server' }));
+});
 
 wss.on('connection', (ws: RelaySocket, req) => {
   req.socket.setNoDelay(true);
@@ -76,35 +110,29 @@ wss.on('connection', (ws: RelaySocket, req) => {
       const text = raw.toString();
       const msg = JSON.parse(text) as Record<string, unknown>;
       const clientId = typeof msg.clientId === 'string' ? msg.clientId : undefined;
-      const uid = typeof msg.uid === 'string' ? msg.uid : ws.uid;
+      const uid = ws.uid;
       if (clientId) ws.clientId = clientId;
-      if (uid) ws.uid = uid;
+      // The authenticated cookie establishes identity. Never trust a client-supplied uid.
       if (!uid) return;
 
       const cache = getUidCache(uid);
 
       if (msg.type === 'relay:join') {
         if (cache.activeBoardId) {
-          ws.send(
-            JSON.stringify({
-              type: 'board:switch',
+          ws.send(JSON.stringify({
+            type: 'board:switch',
+            boardId: cache.activeBoardId,
+            clientId: 'server-cache',
+          }));
+          const cachedCamera = cache.cameraByBoard.get(cache.activeBoardId);
+          if (cachedCamera) {
+            ws.send(JSON.stringify({
+              type: 'board:camera',
               boardId: cache.activeBoardId,
-              uid,
+              camera: cachedCamera.camera,
+              viewport: cachedCamera.viewport,
               clientId: 'server-cache',
-            })
-          );
-          const cachedCam = cache.cameraByBoard.get(cache.activeBoardId);
-          if (cachedCam) {
-            ws.send(
-              JSON.stringify({
-                type: 'board:camera',
-                boardId: cache.activeBoardId,
-                camera: cachedCam.camera,
-                viewport: cachedCam.viewport,
-                uid,
-                clientId: 'server-cache',
-              })
-            );
+            }));
           }
         }
         return;
@@ -130,42 +158,50 @@ wss.on('connection', (ws: RelaySocket, req) => {
         msg.type === 'board:draft-append' ||
         msg.type === 'board:elements-patch' ||
         msg.type === 'board:meta' ||
-        msg.type === 'board:cursor'
+        msg.type === 'board:cursor' ||
+        msg.type === 'board:catalog-changed'
       ) {
-        broadcastToUid(uid, text, clientId);
+        const liveMessage = msg.type === 'board:elements-patch'
+          ? JSON.stringify({ ...msg, committed: false })
+          : text;
+        broadcastToUid(uid, liveMessage, clientId);
       }
     } catch {
-      // Ignore malformed websocket payloads
+      // Ignore malformed websocket payloads.
     }
   });
 });
 
 const heartbeat = setInterval(() => {
   for (const client of wss.clients) {
-    const c = client as RelaySocket;
-    if (c.isAlive === false) {
-      c.terminate();
+    const target = client as RelaySocket;
+    if (target.isAlive === false) {
+      target.terminate();
       continue;
     }
-    c.isAlive = false;
-    c.ping();
+    target.isAlive = false;
+    target.ping();
   }
 }, 25000);
 
 wss.on('close', () => clearInterval(heartbeat));
-server.on('close', () => wss.close());
-
-app.get('/api/health', (_req, res) => {
-  res.json({ ok: true });
+server.on('close', () => {
+  wss.close();
+  void pool?.end();
 });
 
 async function start() {
   const isProd = process.env.NODE_ENV === 'production';
 
+  if (pool) {
+    await initializeDatabase();
+    console.log('Stateflow PostgreSQL schema is ready.');
+  } else {
+    console.warn('DATABASE_URL is not configured. The app shell can run, but login and synchronization are disabled.');
+  }
+
   if (!isProd) {
-    if (process.env.DISABLE_HMR === undefined) {
-      process.env.DISABLE_HMR = 'true';
-    }
+    if (process.env.DISABLE_HMR === undefined) process.env.DISABLE_HMR = 'true';
     const { createServer: createViteServer } = await import('vite');
     const hmrDisabled = process.env.DISABLE_HMR === 'true';
     const vite = await createViteServer({
@@ -188,8 +224,11 @@ async function start() {
 
   const port = Number(process.env.PORT) || 3000;
   server.listen(port, '0.0.0.0', () => {
-    console.log(`SlateFlow server listening on http://0.0.0.0:${port}`);
+    console.log('Stateflow server listening on http://0.0.0.0:' + port);
   });
 }
 
-start();
+start().catch((error) => {
+  console.error('Stateflow server could not start.', error);
+  process.exitCode = 1;
+});

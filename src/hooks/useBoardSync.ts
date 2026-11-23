@@ -7,6 +7,7 @@ export interface ElementsPatch {
   upserts: CanvasElement[];
   deleteIds: string[];
   clearAll?: boolean;
+  committed?: boolean;
 }
 
 interface UseLiveRelayOptions {
@@ -20,7 +21,9 @@ interface UseLiveRelayOptions {
   ) => void;
   onRemoteCursor: (boardId: string, cursor: RemoteCursor | null) => void;
   onRemoteSwitchBoard: (boardId: string) => void;
-  onRemoteBoardMeta: (boardId: string, patch: { title?: string; gridStyle?: GridStyle }) => void;
+  onRemoteBoardMeta: (boardId: string, patch: { title?: string; gridStyle?: GridStyle; camera?: Camera }) => void;
+  onRemoteCatalogChange: (boardId: string) => void;
+  onConnected: () => void;
 }
 
 const STREAM_INTERVAL_MS = 16;
@@ -87,10 +90,10 @@ export function useBoardSync(uid: string | null, options: UseLiveRelayOptions) {
         if (disposed) return;
         attemptRef.current = 0;
         setSyncStatus('connected');
+        optionsRef.current.onConnected();
         ws.send(
           JSON.stringify({
             type: 'relay:join',
-            uid,
             clientId: clientIdRef.current,
           })
         );
@@ -118,6 +121,7 @@ export function useBoardSync(uid: string | null, options: UseLiveRelayOptions) {
               upserts: Array.isArray(msg.upserts) ? (msg.upserts as CanvasElement[]) : [],
               deleteIds: Array.isArray(msg.deleteIds) ? (msg.deleteIds as string[]) : [],
               clearAll: Boolean(msg.clearAll),
+              committed: Boolean(msg.committed),
             });
           } else if (msg.type === 'board:camera' && msg.camera) {
             optionsRef.current.onRemoteCamera(
@@ -132,12 +136,15 @@ export function useBoardSync(uid: string | null, options: UseLiveRelayOptions) {
             );
           } else if (msg.type === 'board:switch' && boardId) {
             optionsRef.current.onRemoteSwitchBoard(boardId);
+          } else if (msg.type === 'board:catalog-changed' && boardId) {
+            optionsRef.current.onRemoteCatalogChange(boardId);
           } else if (msg.type === 'board:meta' && boardId) {
             optionsRef.current.onRemoteBoardMeta(boardId, {
               ...(typeof msg.title === 'string' ? { title: msg.title } : {}),
               ...(typeof msg.gridStyle === 'string'
                 ? { gridStyle: msg.gridStyle as GridStyle }
                 : {}),
+              ...(msg.camera && typeof msg.camera === 'object' ? { camera: msg.camera as Camera } : {}),
             });
           }
         } catch {
@@ -200,7 +207,7 @@ export function useBoardSync(uid: string | null, options: UseLiveRelayOptions) {
       if (!uid) return false;
       const ws = wsRef.current;
       if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ ...payload, uid, clientId: clientIdRef.current }));
+        ws.send(JSON.stringify({ ...payload, clientId: clientIdRef.current }));
         return true;
       }
       return false;
@@ -279,7 +286,7 @@ export function useBoardSync(uid: string | null, options: UseLiveRelayOptions) {
   );
 
   const flushElementsPatch = useCallback(
-    (boardId: string, prevEls: CanvasElement[], nextEls: CanvasElement[]) => {
+    (boardId: string, prevEls: CanvasElement[], nextEls: CanvasElement[], committed: boolean) => {
       lastPatchSentAtRef.current = performance.now();
       if (nextEls.length === 0 && prevEls.length > 0) {
         sendWS({
@@ -288,6 +295,7 @@ export function useBoardSync(uid: string | null, options: UseLiveRelayOptions) {
           upserts: [],
           deleteIds: [],
           clearAll: true,
+          committed,
         });
         return;
       }
@@ -315,6 +323,7 @@ export function useBoardSync(uid: string | null, options: UseLiveRelayOptions) {
         boardId,
         upserts,
         deleteIds,
+        committed,
       });
     },
     [sendWS]
@@ -337,7 +346,7 @@ export function useBoardSync(uid: string | null, options: UseLiveRelayOptions) {
             ? pendingPatchBaseRef.current.baseEls
             : prevEls;
         pendingPatchBaseRef.current = null;
-        flushElementsPatch(boardId, pendingBase, nextEls);
+        flushElementsPatch(boardId, pendingBase, nextEls, true);
         return;
       }
 
@@ -353,7 +362,7 @@ export function useBoardSync(uid: string | null, options: UseLiveRelayOptions) {
             ? pendingPatchBaseRef.current.baseEls
             : prevEls;
         pendingPatchBaseRef.current = null;
-        flushElementsPatch(boardId, base, nextEls);
+        flushElementsPatch(boardId, base, nextEls, false);
       } else {
         if (!pendingPatchBaseRef.current || pendingPatchBaseRef.current.boardId !== boardId) {
           pendingPatchBaseRef.current = { boardId, baseEls: prevEls, nextEls };
@@ -366,7 +375,7 @@ export function useBoardSync(uid: string | null, options: UseLiveRelayOptions) {
             const pending = pendingPatchBaseRef.current;
             if (pending) {
               pendingPatchBaseRef.current = null;
-              flushElementsPatch(pending.boardId, pending.baseEls, pending.nextEls);
+              flushElementsPatch(pending.boardId, pending.baseEls, pending.nextEls, false);
             }
           }, STREAM_INTERVAL_MS - elapsed);
         }

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { ArrowRight, Layers, Monitor, Moon, PenTool, Smartphone, Sun, Zap } from 'lucide-react';
-import { signInWithGoogle } from '../firebase';
+import { signInWithGoogle } from '../auth';
 import { ThemeMode } from '../types/whiteboard';
 
 interface AuthGateProps {
@@ -78,13 +78,13 @@ export const AuthGate: React.FC<AuthGateProps> = ({ isReadOnly, theme, onToggleT
           <section className="lg:col-span-7 space-y-6">
             <div className="space-y-3">
               <p className="text-xs font-semibold tracking-wide text-blue-600 dark:text-blue-400">
-                Infinite Cloud Whiteboard
+                Infinite Whiteboard
               </p>
               <h1 className="text-3xl sm:text-4xl lg:text-[2.65rem] font-bold tracking-tight text-slate-900 dark:text-white leading-[1.14] text-balance max-w-xl">
                 Sketch on your phone. Present live on desktop.
               </h1>
               <p className="text-sm sm:text-base text-slate-600 dark:text-slate-300 leading-relaxed max-w-lg">
-                Write naturally with stylus or touch while your ideas stream at 60fps to your desktop screen and save permanently in the cloud.
+                Write naturally with stylus or touch while your ideas stream at 60fps to your desktop screen and save reliably and synchronize across your devices.
               </p>
             </div>
 
@@ -292,10 +292,10 @@ export const AuthGate: React.FC<AuthGateProps> = ({ isReadOnly, theme, onToggleT
               <div className="pt-3">
                 <div className="flex items-center gap-2 text-xs font-semibold text-slate-900 dark:text-slate-100">
                   <Layers className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
-                  <span>Templates &amp; Cloud</span>
+                  <span>Templates &amp; Sync</span>
                 </div>
                 <p className="mt-1 text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
-                  Kanban, meeting, and quadrant boards saved to Firestore.
+                  Kanban, meeting, and quadrant boards synchronized across devices.
                 </p>
               </div>
             </div>
@@ -365,7 +365,7 @@ export const AuthGate: React.FC<AuthGateProps> = ({ isReadOnly, theme, onToggleT
               </button>
 
               <p className="mt-5 pt-4 border-t border-slate-200/70 dark:border-white/[0.08] text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
-                Your workspace stays private to your Google account and backs up automatically across sessions.
+                Your workspace is private to your account and synchronizes across your registered devices.
               </p>
             </div>
           </section>
@@ -378,7 +378,7 @@ export const AuthGate: React.FC<AuthGateProps> = ({ isReadOnly, theme, onToggleT
           Developed by: Amir Malik (2026)
         </span>
         <span>
-          SlateFlow · Infinite Cloud Whiteboard
+          SlateFlow · Infinite Whiteboard
         </span>
       </footer>
     </div>

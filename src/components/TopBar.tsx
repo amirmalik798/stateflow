@@ -26,7 +26,7 @@ interface TopBarProps {
   isReadOnly: boolean;
   syncStatus: SyncStatus;
   strokeSyncStatus: StrokeSyncStatus;
-  pendingStrokeCount: number;
+  pendingChangeCount: number;
   onSaveNow: () => void;
   followPhone: boolean;
   onToggleFollowPhone: () => void;
@@ -50,7 +50,7 @@ export const TopBar: React.FC<TopBarProps> = ({
   isReadOnly,
   syncStatus,
   strokeSyncStatus,
-  pendingStrokeCount,
+  pendingChangeCount,
   onSaveNow,
   followPhone,
   onToggleFollowPhone,
@@ -251,18 +251,18 @@ export const TopBar: React.FC<TopBarProps> = ({
           <button
             type="button"
             onClick={onSaveNow}
-            disabled={pendingStrokeCount === 0 || strokeSyncStatus === 'syncing' || strokeSyncStatus === 'offline'}
-            aria-label={pendingStrokeCount > 0 ? `Save ${pendingStrokeCount} pending strokes to cloud` : 'All strokes are saved to cloud'}
+            disabled={pendingChangeCount === 0 || strokeSyncStatus === 'syncing' || strokeSyncStatus === 'offline'}
+            aria-label={pendingChangeCount > 0 ? `Save ${pendingChangeCount} pending changes to the server` : 'All changes are synchronized'}
             title={
               strokeSyncStatus === 'syncing'
-                ? 'Saving handwriting to cloud…'
+                ? 'Saving changes to Stateflow…'
                 : strokeSyncStatus === 'offline'
-                ? `Offline — ${pendingStrokeCount} strokes saved on this device`
+                ? `Offline — ${pendingChangeCount} changes saved on this device`
                 : strokeSyncStatus === 'error'
-                ? `Cloud save failed — ${pendingStrokeCount} strokes remain on this device. Retry now.`
-                : pendingStrokeCount > 0
-                ? `${pendingStrokeCount} strokes waiting to sync. Save now.`
-                : 'All handwriting is saved to the cloud'
+                ? `Synchronization failed — ${pendingChangeCount} changes remain on this device. Retry now.`
+                : pendingChangeCount > 0
+                ? `${pendingChangeCount} changes waiting to sync. Save now.`
+                : 'All changes are synchronized'
             }
             className="h-8 px-2 sm:px-2.5 mx-0.5 rounded-xl flex items-center gap-1.5 text-[11px] font-semibold whitespace-nowrap shrink-0 transition-colors disabled:opacity-60 disabled:cursor-not-allowed bg-slate-100/85 dark:bg-white/[0.06] text-slate-700 dark:text-slate-200 hover:bg-slate-200/80 dark:hover:bg-white/10"
           >
@@ -274,8 +274,8 @@ export const TopBar: React.FC<TopBarProps> = ({
             <span className="hidden sm:inline">
               {strokeSyncStatus === 'syncing' ? 'Saving' : 'Save'}
             </span>
-            {pendingStrokeCount > 0 && (
-              <span className="tabular-nums">{pendingStrokeCount}</span>
+            {pendingChangeCount > 0 && (
+              <span className="tabular-nums">{pendingChangeCount}</span>
             )}
           </button>
         )}

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { onAuthStateChanged, type User } from 'firebase/auth';
+import { getCurrentSessionUser, onSessionChanged, signOutUser, type SessionUser } from './auth';
 import { AuthGate } from './components/AuthGate';
 import { BottomToolDock } from './components/BottomToolDock';
 import { BoardsDrawer } from './components/BoardsDrawer';
@@ -12,10 +12,9 @@ import { ZoomControls } from './components/ZoomControls';
 import { BOARD_TEMPLATES } from './constants/templates';
 import { exportBoardToJSON, exportBoardToPNG, exportBoardToSVG } from './engine/export';
 import { getCombinedBounds, moveElement } from './engine/geometry';
-import { auth, signOutUser } from './firebase';
 import { useBoardSync } from './hooks/useBoardSync';
 import { useDeviceMode } from './hooks/useDeviceMode';
-import { useFirestoreBoards } from './hooks/useFirestoreBoards';
+import { useLocalBoards } from './hooks/useLocalBoards';
 import { useOnlineStatus } from './hooks/useOnlineStatus';
 import {
   Board,
@@ -34,15 +33,30 @@ import {
 
 export default function App() {
   const { isReadOnly } = useDeviceMode();
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<SessionUser | null>(null);
   const [authReady, setAuthReady] = useState(false);
 
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (u) => {
-      setUser(u);
+    let active = true;
+    const unsubscribe = onSessionChanged((sessionUser) => {
+      if (!active) return;
+      setUser(sessionUser);
       setAuthReady(true);
     });
-    return () => unsub();
+    void getCurrentSessionUser()
+      .then((sessionUser) => {
+        if (!active) return;
+        setUser(sessionUser);
+        setAuthReady(true);
+      })
+      .catch((sessionError) => {
+        console.error('Unable to restore Stateflow session.', sessionError);
+        if (active) setAuthReady(true);
+      });
+    return () => {
+      active = false;
+      unsubscribe();
+    };
   }, []);
 
   const {
@@ -58,9 +72,12 @@ export default function App() {
     syncElementsDiff,
     updateBoardMeta,
     persistCameraDebounced,
-    createBoardInFirestore,
-    deleteBoardInFirestore,
-  } = useFirestoreBoards(user, isReadOnly);
+    createBoard,
+    deleteBoard,
+    applyRemoteElementsPatch,
+    applyRemoteBoardMetadata,
+    refreshFromServer,
+  } = useLocalBoards(user, isReadOnly);
 
   // Optimistic local state for 60fps interaction (dragging/moving/pinching/live WS sync)
   const [optimisticElements, setOptimisticElements] = useState<CanvasElement[] | null>(null);
@@ -183,6 +200,7 @@ export default function App() {
       });
     },
     onRemoteElementsPatch: (boardId, patch) => {
+      if (patch.committed) void applyRemoteElementsPatch(boardId, patch.upserts, patch.deleteIds);
       if (boardId !== activeBoardIdRef.current) return;
       lastWsElementsAtRef.current = Date.now();
 
@@ -269,11 +287,19 @@ export default function App() {
     },
     onRemoteBoardMeta: (boardId, patch) => {
       if (!isReadOnly) return;
+      void applyRemoteBoardMetadata(boardId, patch);
       setOptimisticMeta((prev) => ({
         boardId,
         ...(prev && prev.boardId === boardId ? prev : {}),
         ...patch,
       }));
+    },
+    onRemoteCatalogChange: () => {
+      void refreshFromServer();
+    },
+    onConnected: () => {
+      if (!isReadOnly && activeBoardId) sendSwitchBoard(activeBoardId);
+      void refreshFromServer();
     },
   });
 
@@ -715,7 +741,7 @@ export default function App() {
     const existingWithTitle = boards.some((b) => b.title === baseTitle);
     const title = existingWithTitle && templateId !== 'blank' ? `${baseTitle} ${num}` : baseTitle;
 
-    const newId = await createBoardInFirestore(
+    const newId = await createBoard(
       title,
       tpl.createElements(),
       tpl.gridStyle,
@@ -729,7 +755,7 @@ export default function App() {
     const orig = boards.find((b) => b.id === id);
     if (!orig) return;
     const els = id === activeBoardId ? activeElements : orig.elements;
-    const newId = await createBoardInFirestore(
+    const newId = await createBoard(
       `${orig.title} (Copy)`,
       els.map((e, idx) => ({ ...e, id: `${e.type}-${Date.now()}-${idx}` })),
       orig.gridStyle,
@@ -740,7 +766,7 @@ export default function App() {
 
   const handleDeleteBoard = async (id: string) => {
     if (isReadOnly || boards.length <= 1) return;
-    await deleteBoardInFirestore(id);
+    await deleteBoard(id);
   };
 
   const handleImportJSON = (file: File) => {
@@ -750,7 +776,7 @@ export default function App() {
       try {
         const parsed = JSON.parse(reader.result as string) as Board;
         if (!Array.isArray(parsed.elements)) return;
-        const newId = await createBoardInFirestore(
+        const newId = await createBoard(
           parsed.title || 'Imported Board',
           parsed.elements,
           parsed.gridStyle || 'dots',
@@ -843,7 +869,7 @@ export default function App() {
         isReadOnly={isReadOnly}
         syncStatus={effectiveSyncStatus}
         strokeSyncStatus={strokeSyncStatus}
-        pendingStrokeCount={pendingStrokeCount}
+        pendingChangeCount={pendingStrokeCount}
         onSaveNow={() => void savePendingStrokes().catch(() => undefined)}
         followPhone={followPhone}
         onToggleFollowPhone={handleToggleFollowPhone}
