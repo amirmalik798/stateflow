@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { ArrowRight, Layers, Monitor, Moon, PenTool, Smartphone, Sun, Zap } from 'lucide-react';
-import { signInWithGoogle } from '../auth';
+import { signInWithPassword } from '../auth';
 import { ThemeMode } from '../types/whiteboard';
 
 interface AuthGateProps {
@@ -10,14 +10,17 @@ interface AuthGateProps {
 }
 
 export const AuthGate: React.FC<AuthGateProps> = ({ isReadOnly, theme, onToggleTheme }) => {
+  const [loginId, setLoginId] = useState('owner');
+  const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const handleSignIn = async () => {
+  const handleSignIn = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
     setError(null);
     setLoading(true);
     try {
-      await signInWithGoogle();
+      await signInWithPassword(loginId, password);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Sign-in failed. Please try again.';
       setError(msg);
@@ -319,10 +322,10 @@ export const AuthGate: React.FC<AuthGateProps> = ({ isReadOnly, theme, onToggleT
               </div>
 
               <h2 className="text-xl sm:text-2xl font-bold text-slate-900 dark:text-white tracking-tight">
-                Sign in to your boards
+                Sign in to your private workspace
               </h2>
               <p className="mt-2 text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
-                Use the same Google account on your phone and desktop to sync drawings, boards, and live sessions seamlessly.
+                Use your personal Stateflow login on both your phone and desktop to access the same private workspace.
               </p>
 
               {error && (
@@ -334,38 +337,30 @@ export const AuthGate: React.FC<AuthGateProps> = ({ isReadOnly, theme, onToggleT
                 </div>
               )}
 
-              <button
-                type="button"
-                onClick={handleSignIn}
-                disabled={loading}
-                className="mt-6 w-full min-h-[50px] px-5 rounded-2xl bg-slate-900 hover:bg-slate-800 dark:bg-white dark:hover:bg-slate-100 text-white dark:text-slate-900 text-sm font-semibold flex items-center justify-center gap-3 shadow-md shadow-slate-900/15 dark:shadow-black/30 active:scale-[0.98] transition-all disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500"
-              >
-                <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24" aria-hidden="true">
-                  <path
-                    fill="#4285F4"
-                    d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17Z"
-                  />
-                  <path
-                    fill="#34A853"
-                    d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.11-6.72-4.96H1.29v3.14C3.26 21.3 7.31 24 12 24Z"
-                  />
-                  <path
-                    fill="#FBBC05"
-                    d="M5.28 14.24c-.24-.72-.38-1.49-.38-2.24s.14-1.52.38-2.24V6.62H1.29C.47 8.24 0 10.06 0 12s.47 3.76 1.29 5.38l3.99-3.14Z"
-                  />
-                  <path
-                    fill="#EA4335"
-                    d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.31 0 3.26 2.7 1.29 6.62l3.99 3.14c.95-2.85 3.6-4.96 6.72-4.96Z"
-                  />
-                </svg>
-                <span className="whitespace-nowrap">
-                  {loading ? 'Signing in...' : 'Continue with Google'}
-                </span>
-                {!loading && <ArrowRight className="w-4 h-4 opacity-70 shrink-0" />}
-              </button>
+              <form onSubmit={handleSignIn} className="mt-6 space-y-4">
+                <label className="block">
+                  <span className="mb-2 block text-xs font-semibold text-slate-700 dark:text-slate-200">Login ID</span>
+                  <input type="text" name="username" autoComplete="username" value={loginId}
+                    onChange={(event) => setLoginId(event.target.value)} required maxLength={120}
+                    className="w-full min-h-[48px] px-4 rounded-xl bg-slate-50 dark:bg-[#101319] border border-slate-200 dark:border-white/10 text-sm text-slate-900 dark:text-white outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+                    placeholder="Enter your login ID" />
+                </label>
+                <label className="block">
+                  <span className="mb-2 block text-xs font-semibold text-slate-700 dark:text-slate-200">Password</span>
+                  <input type="password" name="password" autoComplete="current-password" value={password}
+                    onChange={(event) => setPassword(event.target.value)} required maxLength={1024}
+                    className="w-full min-h-[48px] px-4 rounded-xl bg-slate-50 dark:bg-[#101319] border border-slate-200 dark:border-white/10 text-sm text-slate-900 dark:text-white outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+                    placeholder="Enter your password" />
+                </label>
+                <button type="submit" disabled={loading || !loginId.trim() || !password}
+                  className="w-full min-h-[50px] px-5 rounded-2xl bg-slate-900 hover:bg-slate-800 dark:bg-white dark:hover:bg-slate-100 text-white dark:text-slate-900 text-sm font-semibold flex items-center justify-center gap-3 shadow-md shadow-slate-900/15 dark:shadow-black/30 active:scale-[0.98] transition-all disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500">
+                  <span className="whitespace-nowrap">{loading ? 'Signing in...' : 'Sign in to Stateflow'}</span>
+                  {!loading && <ArrowRight className="w-4 h-4 opacity-70 shrink-0" />}
+                </button>
+              </form>
 
               <p className="mt-5 pt-4 border-t border-slate-200/70 dark:border-white/[0.08] text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
-                Your workspace is private to your account and synchronizes across your registered devices.
+                Private single-user access. Sign in with the same credentials on your phone and desktop.
               </p>
             </div>
           </section>

@@ -17,7 +17,7 @@ services:
         value: "4"
       - key: PG_SSL
         value: "false"
-      - key: GOOGLE_CLIENT_ID
-        sync: false
-      - key: GOOGLE_CLIENT_SECRET
+      - key: STATEFLOW_LOGIN_ID
+        value: "owner"
+      - key: STATEFLOW_LOGIN_PASSWORD
         sync: false

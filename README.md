@@ -9,7 +9,7 @@ Prerequisites: Node.js 22 or newer and PostgreSQL 16 or newer.
 1. Install dependencies: `npm install`.
 2. Copy `.env.example` to `.env` and configure a PostgreSQL connection.
 3. Start the app: `npm run dev`.
-4. For Google sign-in, register `http://localhost:3000/api/auth/google/callback` as an authorized redirect URI and configure the OAuth variables.
+4. Configure `STATEFLOW_LOGIN_ID` and `STATEFLOW_LOGIN_PASSWORD` in your local `.env` file. Use a long, unique password.
 
 ## Local-first architecture
 
@@ -24,13 +24,17 @@ Prerequisites: Node.js 22 or newer and PostgreSQL 16 or newer.
 
 The recommended hosted setup runs both the Stateflow web service and its dedicated PostgreSQL database in the same Render workspace and Frankfurt region. The web service uses the database's internal connection URL through Render's private network.
 
-See [Render free deployment](deploy/RENDER_FREE.md) for the workspace setup, OAuth configuration, and free-tier limitations. The checked-in `render.yaml` references the separately provisioned `stateflow-free-db` database; it does not create or modify the HRMS database.
+See [Render free deployment](deploy/RENDER_FREE.md) for the workspace setup, private single-user login, and free-tier limitations. The checked-in `render.yaml` references the separately provisioned `stateflow-free-db` database; it does not create or modify the HRMS database.
 
 ## Offline behavior
 
 A previously signed-in device can continue working from its local IndexedDB data while the network or hosted service is unavailable. New sign-ins and first-time device setup require the backend. Pending changes remain in the device's local outbox and sync when connectivity returns and the service is reachable.
 
 Live ink previews require both devices to be online and connected to the same running Stateflow service. The durable database sync makes completed work available after a device reconnects; it does not require the desktop PC to stay powered on.
+
+## Personal login security
+
+This deployment uses one fixed login ID and password for one personal workspace. The login ID is `owner`; the password is supplied privately through Render Environment settings and is never committed to Git. The server rate-limits failed login attempts and uses an HttpOnly, SameSite session cookie. Anyone who obtains these credentials can access the same boards, so use a long, unique password and do not share it.
 
 ## Important migration note
 

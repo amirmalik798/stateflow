@@ -28,19 +28,14 @@ The root `render.yaml` defines only the Stateflow web service. It references the
 
 The service gets `DATABASE_URL` from the existing database's internal connection string. `PG_SSL=false` is deliberate: Render's internal same-region connection does not require TLS. Do not paste an external database URL into this service.
 
-## 3. Configure Google OAuth
+## 3. Configure the personal login
 
-The Blueprint marks the following settings as manual secrets, so they are not stored in Git:
+The service uses a single fixed login for your personal workspace:
 
-- `GOOGLE_CLIENT_ID`
-- `GOOGLE_CLIENT_SECRET`
+- Login ID: `owner`
+- Password: choose a long, unique password and set it in the Stateflow web service's **Environment** page as `STATEFLOW_LOGIN_PASSWORD`.
 
-Set both on the Stateflow web service's **Environment** page in Render. In Google Cloud Console, configure the OAuth 2.0 Web application with:
-
-- Authorized JavaScript origin: the exact HTTPS URL assigned to the Stateflow Render web service.
-- Authorized redirect URI: `https://YOUR-STATEFLOW-HOST/api/auth/google/callback`
-
-Replace `YOUR-STATEFLOW-HOST` with the actual Render hostname. Save the Google OAuth changes and redeploy/restart the service after setting the variables. Never commit OAuth credentials or the database URL to Git.
+The password is a private Render environment variable. It is not stored in the repository or exposed to the browser. Do not reuse a password from another account. The same login can be used on your phone and desktop. Failed attempts are rate-limited. Anyone with these credentials can access the same personal workspace.
 
 ## 4. Verify before using real boards
 
@@ -48,7 +43,7 @@ After the first deployment:
 
 1. Open `https://YOUR-STATEFLOW-HOST/healthz`; expect HTTP 200 and a JSON response with `ok: true`.
 2. Confirm the Render service logs report that the PostgreSQL schema is ready.
-3. Sign in on the phone and desktop.
+3. Sign in with the same personal login on the phone and desktop.
 4. Create a disposable board on the phone, add several stylus strokes, rename it, and delete another disposable board.
 5. Refresh both devices and confirm the durable board state is preserved.
 6. With both devices connected, confirm live ink previews and camera/presence behavior still work.

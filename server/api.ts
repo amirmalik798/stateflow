@@ -1,7 +1,6 @@
 import 'dotenv/config';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { Express, NextFunction, Request, Response } from 'express';
-import { OAuth2Client } from 'google-auth-library';
 import { Pool, type PoolClient } from 'pg';
 import { readFile } from 'node:fs/promises';
 
@@ -28,8 +27,47 @@ if (pool) {
 }
 
 const SESSION_COOKIE = 'stateflow_session';
-const OAUTH_STATE_COOKIE = 'stateflow_oauth_state';
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 30;
+const PERSONAL_USER_ID = 'stateflow-owner';
+const LOGIN_MAX_ATTEMPTS = 5;
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_LOCKOUT_MS = 15 * 60 * 1000;
+
+interface LoginAttemptBucket { windowStartedAt: number; attempts: number; blockedUntil: number; }
+const loginAttemptBuckets = new Map<string, LoginAttemptBucket>();
+
+function constantTimeStringEquals(left: string, right: string): boolean {
+  const leftDigest = createHash('sha256').update(left).digest();
+  const rightDigest = createHash('sha256').update(right).digest();
+  return timingSafeEqual(leftDigest, rightDigest) && left === right;
+}
+
+function loginLockoutSeconds(ip: string, now = Date.now()): number {
+  const bucket = loginAttemptBuckets.get(ip);
+  if (!bucket) return 0;
+  if (bucket.blockedUntil > now) return Math.ceil((bucket.blockedUntil - now) / 1000);
+  if (now - bucket.windowStartedAt >= LOGIN_WINDOW_MS || bucket.blockedUntil > 0) loginAttemptBuckets.delete(ip);
+  return 0;
+}
+
+function recordLoginFailure(ip: string, now = Date.now()): number {
+  let bucket = loginAttemptBuckets.get(ip);
+  if (!bucket || now - bucket.windowStartedAt >= LOGIN_WINDOW_MS) {
+    bucket = { windowStartedAt: now, attempts: 0, blockedUntil: 0 };
+    loginAttemptBuckets.set(ip, bucket);
+  }
+  bucket.attempts += 1;
+  if (bucket.attempts >= LOGIN_MAX_ATTEMPTS) {
+    bucket.blockedUntil = now + LOGIN_LOCKOUT_MS;
+    return Math.ceil(LOGIN_LOCKOUT_MS / 1000);
+  }
+  if (loginAttemptBuckets.size > 2000) {
+    for (const [key, value] of loginAttemptBuckets) {
+      if (value.blockedUntil < now && now - value.windowStartedAt >= LOGIN_WINDOW_MS) loginAttemptBuckets.delete(key);
+    }
+  }
+  return 0;
+}
 const MAX_SYNC_OPERATIONS = 200;
 
 export async function initializeDatabase(): Promise<void> {
@@ -122,13 +160,6 @@ async function requireSession(req: Request, res: Response, next: NextFunction): 
     console.error('Session lookup failed.', error);
     res.status(503).json({ error: 'Unable to verify the current session.' });
   }
-}
-
-function oauthClient(req: Request): OAuth2Client {
-  const clientId = process.env.GOOGLE_CLIENT_ID;
-  const secret = process.env.GOOGLE_CLIENT_SECRET;
-  if (!clientId || !secret) throw new Error('GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be configured.');
-  return new OAuth2Client(clientId, secret, appOrigin(req) + '/api/auth/google/callback');
 }
 
 function isSafeId(value: unknown): value is string {
@@ -309,68 +340,63 @@ export function registerApi(app: Express, broadcast: Broadcast): void {
     }
   });
 
-  app.get('/api/auth/google', (req, res) => {
-    try {
-      if (!pool) {
-        res.status(503).send('Stateflow database is not configured.');
-        return;
-      }
-      const state = randomBytes(32).toString('base64url');
-      setCookie(res, req, OAUTH_STATE_COOKIE, state, 600);
-      res.redirect(oauthClient(req).generateAuthUrl({
-        access_type: 'online',
-        prompt: 'select_account',
-        scope: ['openid', 'email', 'profile'],
-        state,
-      }));
-    } catch (error) {
-      res.status(503).send(error instanceof Error ? error.message : 'Google sign-in is unavailable.');
+  app.post('/api/auth/login', requireDatabase, requireSameOrigin, async (req, res) => {
+    if (!pool) return;
+    const configuredLoginId = process.env.STATEFLOW_LOGIN_ID;
+    const configuredPassword = process.env.STATEFLOW_LOGIN_PASSWORD;
+    if (!configuredLoginId || !configuredPassword) {
+      res.status(503).json({ error: 'Personal login is not configured on the server.' });
+      return;
     }
-  });
 
-  app.get('/api/auth/google/callback', async (req, res) => {
+    const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    const retryAfterSeconds = loginLockoutSeconds(ip);
+    if (retryAfterSeconds > 0) {
+      res.setHeader('Retry-After', String(retryAfterSeconds));
+      res.status(429).json({ error: 'Too many sign-in attempts. Please try again later.' });
+      return;
+    }
+
+    const body = req.body as Record<string, unknown>;
+    const loginId = typeof body.loginId === 'string' ? body.loginId : '';
+    const password = typeof body.password === 'string' ? body.password : '';
+    const loginIdMatches = constantTimeStringEquals(loginId, configuredLoginId);
+    const passwordMatches = constantTimeStringEquals(password, configuredPassword);
+    const valid = loginId.length <= 120 && password.length <= 1024 && loginIdMatches && passwordMatches;
+    if (!valid) {
+      const lockout = recordLoginFailure(ip);
+      if (lockout > 0) {
+        res.setHeader('Retry-After', String(lockout));
+        res.status(429).json({ error: 'Too many sign-in attempts. Please try again later.' });
+      } else {
+        res.status(401).json({ error: 'The login ID or password is incorrect.' });
+      }
+      return;
+    }
+
+    loginAttemptBuckets.delete(ip);
     try {
-      if (!pool) {
-        res.status(503).send('Stateflow database is not configured.');
-        return;
-      }
-      const expectedState = readCookie(req.headers.cookie, OAUTH_STATE_COOKIE);
-      const receivedState = typeof req.query.state === 'string' ? req.query.state : '';
-      clearCookie(res, req, OAUTH_STATE_COOKIE);
-      if (!expectedState || !receivedState) throw new Error('Google sign-in state is missing.');
-      const expected = Buffer.from(expectedState);
-      const received = Buffer.from(receivedState);
-      if (expected.length !== received.length || !timingSafeEqual(expected, received)) {
-        throw new Error('Google sign-in state did not match.');
-      }
-      const code = typeof req.query.code === 'string' ? req.query.code : '';
-      if (!code) throw new Error('Google did not return an authorization code.');
-      const client = oauthClient(req);
-      const { tokens } = await client.getToken(code);
-      if (!tokens.id_token) throw new Error('Google did not return an identity token.');
-      const ticket = await client.verifyIdToken({
-        idToken: tokens.id_token,
-        audience: process.env.GOOGLE_CLIENT_ID,
-      });
-      const profile = ticket.getPayload();
-      if (!profile?.sub || !profile.email || profile.email_verified !== true) {
-        throw new Error('Google account identity or verified email is missing.');
-      }
       await pool.query(
-        'INSERT INTO users (id, email, display_name, picture_url) VALUES ($1, $2, $3, $4) ' +
-        'ON CONFLICT (id) DO UPDATE SET email = EXCLUDED.email, display_name = EXCLUDED.display_name, picture_url = EXCLUDED.picture_url, updated_at = now()',
-        [profile.sub, profile.email, profile.name ?? null, profile.picture ?? null]
+        'INSERT INTO users (id, email, display_name, picture_url) VALUES ($1, $2, $3, NULL) ' +
+        'ON CONFLICT (id) DO UPDATE SET email = EXCLUDED.email, display_name = EXCLUDED.display_name, updated_at = now()',
+        [PERSONAL_USER_ID, 'owner@stateflow.local', 'Personal Workspace']
       );
       const token = randomBytes(32).toString('base64url');
       await pool.query(
         'INSERT INTO auth_sessions (token_hash, user_id, expires_at) VALUES ($1, $2, $3)',
-        [hashToken(token), profile.sub, new Date(Date.now() + SESSION_TTL_SECONDS * 1000)]
+        [hashToken(token), PERSONAL_USER_ID, new Date(Date.now() + SESSION_TTL_SECONDS * 1000)]
       );
       setCookie(res, req, SESSION_COOKIE, token, SESSION_TTL_SECONDS);
-      res.redirect('/');
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ user: {
+        uid: PERSONAL_USER_ID,
+        email: 'owner@stateflow.local',
+        displayName: 'Personal Workspace',
+        photoURL: null,
+      } });
     } catch (error) {
-      console.error('Google sign-in failed.', error);
-      res.status(401).send('Google sign-in failed. Return to Stateflow and try again.');
+      console.error('Personal sign-in failed.', error);
+      res.status(503).json({ error: 'Unable to sign in right now. Please try again.' });
     }
   });
 
