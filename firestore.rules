@@ -183,7 +183,6 @@ service cloud.firestore {
           && isVerifiedUser()
           && isValidElement(incoming(), boardId)
           && ownsParentBoard(boardId)
-          && incoming().createdAt == request.time
           && incoming().updatedAt == request.time;
         allow update: if isValidId(boardId)
           && isValidId(elementId)
