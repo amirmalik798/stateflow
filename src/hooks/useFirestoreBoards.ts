@@ -158,6 +158,10 @@ function serializeElementForFirestore(
  * Compare the persisted element fields rather than JavaScript object identity.
  * Keep in lockstep with serializeElementForFirestore; timestamps are metadata.
  */
+/**
+ * Compare fields that are actually serialized for Firestore. This makes equal
+ * immutable snapshots cheap to diff and prevents timestamp-only rewrites.
+ */
 export function areElementDocumentsEqual(previous: CanvasElement, next: CanvasElement): boolean {
   if (
     previous.id !== next.id ||
@@ -228,6 +232,33 @@ export function areElementDocumentsEqual(previous: CanvasElement, next: CanvasEl
         previous.width === next.width && previous.height === next.height &&
         sameString(previous.dataUrl, next.dataUrl, 700000);
   }
+}
+
+/**
+ * Pure count model used by the 1,000-element regression test. The returned
+ * counts are the exact create/update/delete document operations syncElementsDiff
+ * schedules before batching them.
+ */
+export function countElementDocumentWrites(
+  previous: CanvasElement[],
+  next: CanvasElement[]
+): { creates: number; updates: number; deletes: number; total: number } {
+  const previousById = new Map(previous.map((element) => [element.id, element]));
+  const nextById = new Map(next.map((element) => [element.id, element]));
+  let creates = 0;
+  let updates = 0;
+  let deletes = 0;
+
+  for (const id of previousById.keys()) {
+    if (!nextById.has(id)) deletes += 1;
+  }
+  for (const element of next) {
+    const existing = previousById.get(element.id);
+    if (!existing) creates += 1;
+    else if (!areElementDocumentsEqual(existing, element)) updates += 1;
+  }
+
+  return { creates, updates, deletes, total: creates + updates + deletes };
 }
 
 function docToElement(id: string, data: Record<string, unknown>): CanvasElement {
