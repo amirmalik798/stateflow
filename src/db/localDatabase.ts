@@ -193,9 +193,13 @@ export async function getLocalOutbox(userId: string, limit = 100): Promise<SyncO
 export async function acknowledgeLocalOutbox(userId: string, operationIds: string[]): Promise<void> {
   if (operationIds.length) await databaseFor(userId).outbox.bulkDelete(operationIds);
 }
-export async function applyRemoteOperations(userId: string, operations: ServerOperation[]): Promise<void> {
-  if (!operations.length) return;
+export async function applyRemoteOperations(
+  userId: string,
+  operations: ServerOperation[]
+): Promise<ServerOperation[]> {
+  if (!operations.length) return [];
   const db = databaseFor(userId);
+  const applied: ServerOperation[] = [];
   await db.transaction('rw', db.boards, db.elements, db.outbox, async () => {
     // A pending local operation has priority over an older remote update for the
     // same entity. The local version will be pushed after connectivity returns.
@@ -225,19 +229,33 @@ export async function applyRemoteOperations(userId: string, operations: ServerOp
           zIndex: element.zIndex,
         });
       }
+      applied.push(operation);
     }
   });
+  return applied;
 }
+
 export async function applyRemoteElementPatch(
   userId: string,
   boardId: string,
   upserts: CanvasElement[],
   deleteIds: string[]
-): Promise<void> {
+): Promise<{ upserts: CanvasElement[]; deleteIds: string[] }> {
   const db = databaseFor(userId);
-  await db.transaction('rw', db.elements, async () => {
-    for (const id of deleteIds) await db.elements.delete(elementKey(boardId, id));
+  const appliedUpserts: CanvasElement[] = [];
+  const appliedDeletes: string[] = [];
+  await db.transaction('rw', db.elements, db.outbox, async () => {
+    const pending = await db.outbox.where('boardId').equals(boardId).toArray();
+    const pendingElementIds = new Set(
+      pending.filter((entry) => entry.entityType === 'element').map((entry) => entry.entityId)
+    );
+    for (const id of deleteIds) {
+      if (pendingElementIds.has(id)) continue;
+      await db.elements.delete(elementKey(boardId, id));
+      appliedDeletes.push(id);
+    }
     for (const element of upserts) {
+      if (pendingElementIds.has(element.id)) continue;
       await db.elements.put({
         key: elementKey(boardId, element.id),
         boardId,
@@ -245,18 +263,30 @@ export async function applyRemoteElementPatch(
         payload: element,
         zIndex: element.zIndex,
       });
+      appliedUpserts.push(element);
     }
   });
+  return { upserts: appliedUpserts, deleteIds: appliedDeletes };
 }
+
 export async function applyRemoteBoardMeta(
   userId: string,
   boardId: string,
   patch: Partial<Pick<Board, 'title' | 'gridStyle' | 'camera'>>
-): Promise<void> {
+): Promise<boolean> {
   const db = databaseFor(userId);
-  const board = await db.boards.get(boardId);
-  if (board) await db.boards.put({ ...board, ...patch, updatedAt: Date.now() });
+  return db.transaction('rw', db.boards, db.outbox, async () => {
+    const pending = await db.outbox.where('boardId').equals(boardId).toArray();
+    if (pending.some((entry) => entry.entityType === 'board' && entry.entityId === boardId)) {
+      return false;
+    }
+    const board = await db.boards.get(boardId);
+    if (!board) return false;
+    await db.boards.put({ ...board, ...patch, updatedAt: Date.now() });
+    return true;
+  });
 }
+
 export async function replaceLocalDataFromSnapshot(
   userId: string,
   snapshot: {

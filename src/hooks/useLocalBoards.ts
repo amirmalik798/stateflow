@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createStarterBoard } from '../constants/starter';
 import type { Board, Camera, CanvasElement, GridStyle } from '../types/whiteboard';
+import type { ServerOperation } from '../services/syncApi';
 import {
   acknowledgeSyncCursor,
   getDeviceId,
@@ -107,10 +108,11 @@ export function useLocalBoards(user: LocalUser | null, isReadOnly: boolean) {
         // the local cursor; a crash can therefore only cause safe idempotent replay.
         let cursor = await getSyncCursor(userId);
         let hasMore = true;
+        const appliedRemoteOperations: ServerOperation[] = [];
         while (hasMore) {
           const page = await pullSyncOperations(cursor, 500);
           if (page.operations.length) {
-            await applyRemoteOperations(userId, page.operations);
+            appliedRemoteOperations.push(...await applyRemoteOperations(userId, page.operations));
           }
           if (page.nextCursor > cursor) {
             cursor = page.nextCursor;
@@ -120,7 +122,7 @@ export function useLocalBoards(user: LocalUser | null, isReadOnly: boolean) {
           if (page.operations.length === 0) break;
         }
         await acknowledgeSyncCursor(deviceId, cursor);
-        await refreshLocalState(userId);
+        applyOperationsToMemory(appliedRemoteOperations);
         setStrokeSyncStatus('saved');
       } catch (syncError) {
         const count = await getOutboxCount(userId).catch(() => 0);
@@ -134,7 +136,7 @@ export function useLocalBoards(user: LocalUser | null, isReadOnly: boolean) {
       syncInFlightRef.current = null;
     });
     return syncInFlightRef.current;
-  }, [user, refreshLocalState]);
+  }, [user]);
 
   const scheduleSync = useCallback(() => {
     if (syncTimerRef.current !== null) window.clearTimeout(syncTimerRef.current);
@@ -193,14 +195,19 @@ export function useLocalBoards(user: LocalUser | null, isReadOnly: boolean) {
     deleteIds: string[]
   ) => {
     if (!user) return;
-    await applyRemoteElementPatch(user.uid, boardId, upserts, deleteIds);
-    const nextBoards = await listLocalBoards(user.uid);
+    const applied = await applyRemoteElementPatch(user.uid, boardId, upserts, deleteIds);
+    const current = boardsRef.current.find((board) => board.id === boardId);
+    if (!current || (applied.upserts.length === 0 && applied.deleteIds.length === 0)) return;
+    const elements = new Map(current.elements.map((element) => [element.id, element]));
+    applied.deleteIds.forEach((id) => elements.delete(id));
+    applied.upserts.forEach((element) => elements.set(element.id, element));
+    const nextElements = [...elements.values()].sort((a, b) => a.zIndex - b.zIndex);
+    const nextBoards = boardsRef.current.map((board) =>
+      board.id === boardId ? { ...board, elements: nextElements } : board
+    );
     boardsRef.current = nextBoards;
     setBoards(nextBoards);
-    if (activeBoardIdRef.current === boardId) {
-      const active = nextBoards.find((board) => board.id === boardId);
-      setActiveElements(active?.elements ?? []);
-    }
+    if (activeBoardIdRef.current === boardId) setActiveElements(nextElements);
   }, [user]);
 
   const applyRemoteBoardMetadata = useCallback(async (
@@ -208,9 +215,63 @@ export function useLocalBoards(user: LocalUser | null, isReadOnly: boolean) {
     patch: Partial<Pick<Board, 'title' | 'gridStyle' | 'camera'>>
   ) => {
     if (!user) return;
-    await applyRemoteBoardMeta(user.uid, boardId, patch);
-    await refreshLocalState(user.uid);
-  }, [user, refreshLocalState]);
+    const applied = await applyRemoteBoardMeta(user.uid, boardId, patch);
+    if (!applied) return;
+    const nextBoards = boardsRef.current.map((board) =>
+      board.id === boardId ? { ...board, ...patch, updatedAt: Date.now() } : board
+    );
+    boardsRef.current = nextBoards;
+    setBoards(nextBoards);
+    const active = nextBoards.find((board) => board.id === activeBoardIdRef.current);
+    if (active) setActiveElements(active.elements);
+  }, [user]);
+
+  const applyOperationsToMemory = useCallback((operations: ServerOperation[]) => {
+    if (operations.length === 0) return;
+    const nextById = new Map(boardsRef.current.map((board) => [board.id, board]));
+    for (const operation of operations) {
+      if (operation.entityType === 'board') {
+        if (operation.action === 'delete') {
+          nextById.delete(operation.entityId);
+        } else if (operation.payload) {
+          const payload = operation.payload as Omit<Board, 'elements'>;
+          const existing = nextById.get(operation.entityId);
+          nextById.set(operation.entityId, {
+            ...payload,
+            elements: existing?.elements ?? [],
+          });
+        }
+        continue;
+      }
+      const board = nextById.get(operation.boardId);
+      if (!board) continue;
+      const elements = new Map(board.elements.map((element) => [element.id, element]));
+      if (operation.action === 'delete') {
+        elements.delete(operation.entityId);
+      } else if (operation.payload) {
+        const element = operation.payload as CanvasElement;
+        elements.set(element.id, element);
+      }
+      nextById.set(operation.boardId, {
+        ...board,
+        elements: [...elements.values()].sort((a, b) => a.zIndex - b.zIndex),
+      });
+    }
+    const nextBoards = [...nextById.values()].sort((a, b) => b.updatedAt - a.updatedAt);
+    boardsRef.current = nextBoards;
+    setBoards(nextBoards);
+    const active = nextBoards.find((board) => board.id === activeBoardIdRef.current);
+    if (active) setActiveElements(active.elements);
+    else if (nextBoards.length > 0) {
+      activeBoardIdRef.current = nextBoards[0].id;
+      setActiveBoardId(nextBoards[0].id);
+      setActiveElements(nextBoards[0].elements);
+    } else {
+      activeBoardIdRef.current = '';
+      setActiveBoardId('');
+      setActiveElements([]);
+    }
+  }, []);
 
   const refreshFromServer = useCallback(async () => {
     if (!user) return;
