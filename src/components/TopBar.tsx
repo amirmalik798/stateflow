@@ -2,6 +2,8 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   Download,
   Eye,
+  CloudUpload,
+  LoaderCircle,
   Fingerprint,
   FolderKanban,
   Hand,
@@ -15,6 +17,7 @@ import {
   Undo2,
 } from 'lucide-react';
 import { SyncStatus } from '../hooks/useBoardSync';
+import type { StrokeSyncStatus } from '../hooks/useFirestoreBoards';
 import { usePWAInstall } from '../hooks/usePWAInstall';
 import { ThemeMode } from '../types/whiteboard';
 
@@ -22,6 +25,9 @@ interface TopBarProps {
   boardTitle: string;
   isReadOnly: boolean;
   syncStatus: SyncStatus;
+  strokeSyncStatus: StrokeSyncStatus;
+  pendingStrokeCount: number;
+  onSaveNow: () => void;
   followPhone: boolean;
   onToggleFollowPhone: () => void;
   zenMode: boolean;
@@ -43,6 +49,9 @@ export const TopBar: React.FC<TopBarProps> = ({
   boardTitle,
   isReadOnly,
   syncStatus,
+  strokeSyncStatus,
+  pendingStrokeCount,
+  onSaveNow,
   followPhone,
   onToggleFollowPhone,
   zenMode,
@@ -236,6 +245,39 @@ export const TopBar: React.FC<TopBarProps> = ({
               <Maximize className="w-[17px] h-[17px]" />
             </button>
           </>
+        )}
+
+        {!isReadOnly && (
+          <button
+            type="button"
+            onClick={onSaveNow}
+            disabled={pendingStrokeCount === 0 || strokeSyncStatus === 'syncing' || strokeSyncStatus === 'offline'}
+            aria-label={pendingStrokeCount > 0 ? `Save ${pendingStrokeCount} pending strokes to cloud` : 'All strokes are saved to cloud'}
+            title={
+              strokeSyncStatus === 'syncing'
+                ? 'Saving handwriting to cloud…'
+                : strokeSyncStatus === 'offline'
+                ? `Offline — ${pendingStrokeCount} strokes saved on this device`
+                : strokeSyncStatus === 'error'
+                ? `Cloud save failed — ${pendingStrokeCount} strokes remain on this device. Retry now.`
+                : pendingStrokeCount > 0
+                ? `${pendingStrokeCount} strokes waiting to sync. Save now.`
+                : 'All handwriting is saved to the cloud'
+            }
+            className="h-8 px-2 sm:px-2.5 mx-0.5 rounded-xl flex items-center gap-1.5 text-[11px] font-semibold whitespace-nowrap shrink-0 transition-colors disabled:opacity-60 disabled:cursor-not-allowed bg-slate-100/85 dark:bg-white/[0.06] text-slate-700 dark:text-slate-200 hover:bg-slate-200/80 dark:hover:bg-white/10"
+          >
+            {strokeSyncStatus === 'syncing' ? (
+              <LoaderCircle className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <CloudUpload className="w-3.5 h-3.5" />
+            )}
+            <span className="hidden sm:inline">
+              {strokeSyncStatus === 'syncing' ? 'Saving' : 'Save'}
+            </span>
+            {pendingStrokeCount > 0 && (
+              <span className="tabular-nums">{pendingStrokeCount}</span>
+            )}
+          </button>
         )}
 
         {/* Live WebSocket Sync Badge */}
