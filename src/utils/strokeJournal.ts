@@ -100,7 +100,7 @@ export function applyStrokeJournalEntries(
     if (entry.operation === 'delete') {
       elements.delete(entry.elementId);
     } else if (entry.element) {
-      elements.set(entry.elementId, entry.element);
+      elements.set(entry.elementId, { ...entry.element, createdAtMs: entry.createdAtMs });
     }
   }
   return [...elements.values()].sort((a, b) => a.zIndex - b.zIndex);
