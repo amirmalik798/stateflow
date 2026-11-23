@@ -50,7 +50,7 @@ server.on('upgrade', (req, socket, head) => {
   const host = req.headers.host;
   const expectedOrigin = process.env.APP_ORIGIN ? new URL(process.env.APP_ORIGIN).origin : (host ? forwardedProto + '://' + host : null);
   if (!origin || !expectedOrigin || new URL(origin).origin !== expectedOrigin) {
-    socket.write('HTTP/1.1 403 Forbidden\\r\\nConnection: close\\r\\n\\r\\n');
+    socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
     socket.destroy();
     return;
   }
@@ -58,7 +58,7 @@ server.on('upgrade', (req, socket, head) => {
   void getSessionUserId(req.headers.cookie)
     .then((userId) => {
       if (!userId) {
-        socket.write('HTTP/1.1 401 Unauthorized\\r\\nConnection: close\\r\\n\\r\\n');
+        socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
         socket.destroy();
         return;
       }
