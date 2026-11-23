@@ -60,10 +60,9 @@ export function coalesceStrokeJournalEntry(
   }
 
   if (current?.operation === 'delete') {
-    // Undoing a delete of a previously synced stroke simply cancels the tombstone.
-    if (!current.requiresCreate) return null;
-    // A create may have reached Firestore before its acknowledgement was interrupted.
-    // Recreate with the same stable creation timestamp so retries remain idempotent.
+    // Undo may race a successful delete whose acknowledgement was interrupted.
+    // Re-upsert with the same immutable creation time: this updates an existing
+    // document or recreates a missing one without changing its identity.
     return {
       key,
       uid,
