@@ -10,7 +10,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "test:sync-diff": "vitest run src/hooks/useFirestoreBoards.diff.test.ts"
+    "test:sync-diff": "vitest run src/hooks/useFirestoreBoards.diff.test.ts src/utils/strokeJournal.test.ts"
   },
   "dependencies": {
     "@firebase/eslint-plugin-security-rules": "^0.0.2",

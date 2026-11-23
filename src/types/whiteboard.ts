@@ -32,6 +32,8 @@ export interface BaseElement {
   id: string;
   zIndex: number;
   opacity: number;
+  /** Client-only metadata from Firestore, used to make local stroke retries idempotent. */
+  createdAtMs?: number;
   locked?: boolean;
 }
 

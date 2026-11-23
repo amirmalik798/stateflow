@@ -18,12 +18,23 @@ import { createStarterElements } from '../constants/starter';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import { areElementDocumentsEqual, decimatePoints } from '../utils/elementDiff';
 import {
+  acknowledgeStrokeJournalEntries,
+  applyStrokeJournalChanges,
+  applyStrokeJournalEntries,
+  listStrokeJournalEntries,
+  type StrokeJournalChange,
+  type StrokeJournalEntry,
+} from '../utils/strokeJournal';
+import {
   Board,
   Camera,
   CanvasElement,
   GridStyle,
   Point,
+  StrokeElement,
 } from '../types/whiteboard';
+
+export type StrokeSyncStatus = 'saved' | 'pending' | 'syncing' | 'offline' | 'error';
 
 function toMillis(val: unknown): number {
   if (val instanceof Timestamp) return val.toMillis();
@@ -48,7 +59,8 @@ function serializeElementForFirestore(
   el: CanvasElement,
   ownerId: string,
   boardId: string,
-  isCreate: boolean
+  isCreate: boolean,
+  createdAt?: Timestamp
 ): Record<string, unknown> {
   const base: Record<string, unknown> = {
     ownerId,
@@ -59,7 +71,7 @@ function serializeElementForFirestore(
     updatedAt: serverTimestamp(),
   };
   if (isCreate) {
-    base.createdAt = serverTimestamp();
+    base.createdAt = createdAt ?? serverTimestamp();
   }
   if (typeof el.locked === 'boolean') base.locked = el.locked;
 
@@ -146,6 +158,7 @@ function docToElement(id: string, data: Record<string, unknown>): CanvasElement 
     id,
     zIndex: Number(data.zIndex ?? 1),
     opacity: Number(data.opacity ?? 1),
+    createdAtMs: toMillis(data.createdAt),
     ...(typeof data.locked === 'boolean' ? { locked: data.locked } : {}),
   };
 
@@ -228,10 +241,184 @@ export function useFirestoreBoards(user: User | null, isReadOnly: boolean) {
   const [activeElements, setActiveElements] = useState<CanvasElement[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<Error | null>(null);
+  const [pendingStrokeCount, setPendingStrokeCount] = useState(0);
+  const [strokeSyncStatus, setStrokeSyncStatus] = useState<StrokeSyncStatus>('saved');
 
   const elementsMapRef = useRef<Map<string, CanvasElement[]>>(new Map());
   const cameraSaveTimerRef = useRef<number | null>(null);
+  const strokeFlushTimerRef = useRef<number | null>(null);
+  const strokeQueueSerialRef = useRef<Promise<void>>(Promise.resolve());
+  const strokeFlushPromiseRef = useRef<Promise<void> | null>(null);
   const seededRef = useRef<boolean>(false);
+
+  const runStrokeQueueSerially = useCallback(<T,>(task: () => Promise<T>): Promise<T> => {
+    const result = strokeQueueSerialRef.current.then(task, task);
+    strokeQueueSerialRef.current = result.then(() => undefined, () => undefined);
+    return result;
+  }, []);
+
+  const flushPendingStrokesInternal = useCallback(async () => {
+    if (!user || isReadOnly) return;
+
+    while (true) {
+      const entries = await listStrokeJournalEntries(user.uid);
+      setPendingStrokeCount(entries.length);
+      if (entries.length === 0) {
+        setStrokeSyncStatus('saved');
+        return;
+      }
+      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        setStrokeSyncStatus('offline');
+        return;
+      }
+
+      setStrokeSyncStatus('syncing');
+      const byBoard = new Map<string, StrokeJournalEntry[]>();
+      for (const entry of entries) {
+        const group = byBoard.get(entry.boardId) ?? [];
+        group.push(entry);
+        byBoard.set(entry.boardId, group);
+      }
+
+      // Keep each batch scoped to one board. The rules validate the same parent board
+      // for every stroke, allowing Firestore to cache that parent-document lookup.
+      for (const [boardId, boardEntries] of byBoard) {
+        for (let offset = 0; offset < boardEntries.length; offset += 100) {
+          const chunk = boardEntries.slice(offset, offset + 100);
+          const batch = writeBatch(db);
+          for (const entry of chunk) {
+            const ref = doc(db, 'boards', boardId, 'elements', sanitizeId(entry.elementId));
+            if (entry.operation === 'delete') {
+              batch.delete(ref);
+            } else if (entry.element) {
+              batch.set(
+                ref,
+                serializeElementForFirestore(
+                  entry.element,
+                  user.uid,
+                  boardId,
+                  true,
+                  Timestamp.fromMillis(entry.createdAtMs)
+                )
+              );
+            }
+          }
+          await batch.commit();
+          await acknowledgeStrokeJournalEntries(chunk);
+          const remaining = await listStrokeJournalEntries(user.uid);
+          setPendingStrokeCount(remaining.length);
+        }
+      }
+
+      const remaining = await listStrokeJournalEntries(user.uid);
+      setPendingStrokeCount(remaining.length);
+      if (remaining.length === 0) {
+        setStrokeSyncStatus('saved');
+        if (strokeFlushTimerRef.current !== null) {
+          window.clearTimeout(strokeFlushTimerRef.current);
+          strokeFlushTimerRef.current = null;
+        }
+        return;
+      }
+      // New strokes can be journaled while a network batch is in flight.
+      // Loop again until the queue observed after acknowledgement is empty.
+    }
+  }, [user, isReadOnly]);
+
+  const savePendingStrokes = useCallback(() => {
+    if (strokeFlushPromiseRef.current) return strokeFlushPromiseRef.current;
+    const promise = flushPendingStrokesInternal().catch((syncError) => {
+      setStrokeSyncStatus('error');
+      console.error('Stateflow handwriting cloud sync failed; pending strokes remain in IndexedDB.', syncError);
+      throw syncError;
+    }).finally(() => {
+      strokeFlushPromiseRef.current = null;
+    });
+    strokeFlushPromiseRef.current = promise;
+    return promise;
+  }, [flushPendingStrokesInternal]);
+
+  const queueStrokeChanges = useCallback((boardId: string, changes: StrokeJournalChange[]) => {
+    return runStrokeQueueSerially(async () => {
+      if (!user || isReadOnly || changes.length === 0) return;
+      await applyStrokeJournalChanges(user.uid, boardId, changes);
+      const entries = await listStrokeJournalEntries(user.uid);
+      setPendingStrokeCount(entries.length);
+
+      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        setStrokeSyncStatus(entries.length > 0 ? 'offline' : 'saved');
+        return;
+      }
+
+      setStrokeSyncStatus(entries.length > 0 ? 'pending' : 'saved');
+      if (entries.length >= 100) {
+        if (strokeFlushTimerRef.current !== null) {
+          window.clearTimeout(strokeFlushTimerRef.current);
+          strokeFlushTimerRef.current = null;
+        }
+        // Do not await the network flush here. Later strokes must continue being
+        // written to IndexedDB while Firestore is slow or temporarily unreachable.
+        window.setTimeout(() => {
+          void savePendingStrokes().catch(() => undefined);
+        }, 0);
+      } else if (entries.length > 0) {
+        if (strokeFlushTimerRef.current !== null) {
+          window.clearTimeout(strokeFlushTimerRef.current);
+        }
+        strokeFlushTimerRef.current = window.setTimeout(() => {
+          strokeFlushTimerRef.current = null;
+          void savePendingStrokes().catch(() => undefined);
+        }, 10000);
+      }
+    });
+  }, [user, isReadOnly, runStrokeQueueSerially, savePendingStrokes]);
+
+  useEffect(() => {
+    if (!user || isReadOnly) {
+      setPendingStrokeCount(0);
+      setStrokeSyncStatus('saved');
+      return;
+    }
+
+    let active = true;
+    const resumePendingStrokes = async () => {
+      try {
+        const entries = await listStrokeJournalEntries(user.uid);
+        if (!active) return;
+        setPendingStrokeCount(entries.length);
+        if (entries.length === 0) {
+          setStrokeSyncStatus('saved');
+        } else if (!navigator.onLine) {
+          setStrokeSyncStatus('offline');
+        } else {
+          await savePendingStrokes();
+        }
+      } catch (syncError) {
+        if (!active) return;
+        setStrokeSyncStatus('error');
+        console.error('Unable to restore the local handwriting queue.', syncError);
+      }
+    };
+    const handleOnline = () => void savePendingStrokes().catch(() => undefined);
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible' && navigator.onLine) {
+        void savePendingStrokes().catch(() => undefined);
+      }
+    };
+
+    void resumePendingStrokes();
+    window.addEventListener('online', handleOnline);
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      active = false;
+      window.removeEventListener('online', handleOnline);
+      document.removeEventListener('visibilitychange', handleVisibility);
+      if (strokeFlushTimerRef.current !== null) {
+        window.clearTimeout(strokeFlushTimerRef.current);
+        strokeFlushTimerRef.current = null;
+      }
+    };
+  }, [user, isReadOnly, savePendingStrokes]);
 
   // Throw async listener errors inside render so ErrorBoundary catches them
   if (error) {
@@ -371,18 +558,47 @@ export function useFirestoreBoards(user: User | null, isReadOnly: boolean) {
       where('ownerId', '==', uid)
     );
 
+    let snapshotVersion = 0;
     const unsub = onSnapshot(
       q,
       (snapshot) => {
-        const els: CanvasElement[] = snapshot.docs.map((d) =>
-          docToElement(d.id, d.data() as Record<string, unknown>)
-        );
-        els.sort((a, b) => a.zIndex - b.zIndex);
-        elementsMapRef.current.set(activeBoardId, els);
-        setActiveElements(els);
-        setBoards((prev) =>
-          prev.map((b) => (b.id === activeBoardId ? { ...b, elements: els } : b))
-        );
+        const version = ++snapshotVersion;
+        void (async () => {
+          const remoteElements: CanvasElement[] = snapshot.docs.map((d) =>
+            docToElement(d.id, d.data() as Record<string, unknown>)
+          );
+          const journal = await listStrokeJournalEntries(uid, activeBoardId);
+          if (version !== snapshotVersion) return;
+          const remoteStrokes = remoteElements.filter(
+            (element): element is StrokeElement =>
+              element.type === 'pen' || element.type === 'highlighter'
+          );
+          const localStrokes = applyStrokeJournalEntries(
+            remoteStrokes,
+            journal.filter((entry) => entry.boardId === activeBoardId)
+          );
+          const nonStrokeElements = remoteElements.filter(
+            (element) => element.type !== 'pen' && element.type !== 'highlighter'
+          );
+          const els: CanvasElement[] = [...nonStrokeElements, ...localStrokes].sort(
+            (a, b) => a.zIndex - b.zIndex
+          );
+          elementsMapRef.current.set(activeBoardId, els);
+          setActiveElements(els);
+          setBoards((prev) =>
+            prev.map((b) => (b.id === activeBoardId ? { ...b, elements: els } : b))
+          );
+        })().catch((journalError) => {
+          console.error('Unable to reconcile local handwriting with Firestore snapshot.', journalError);
+          const remoteElements: CanvasElement[] = snapshot.docs.map((d) =>
+            docToElement(d.id, d.data() as Record<string, unknown>)
+          );
+          elementsMapRef.current.set(activeBoardId, remoteElements);
+          setActiveElements(remoteElements);
+          setBoards((prev) =>
+            prev.map((b) => (b.id === activeBoardId ? { ...b, elements: remoteElements } : b))
+          );
+        });
       },
       (err) => {
         try {
@@ -393,7 +609,10 @@ export function useFirestoreBoards(user: User | null, isReadOnly: boolean) {
       }
     );
 
-    return () => unsub();
+    return () => {
+      snapshotVersion += 1;
+      unsub();
+    };
   }, [user, activeBoardId]);
 
   const setWorkspaceActiveBoard = useCallback(
@@ -443,60 +662,88 @@ export function useFirestoreBoards(user: User | null, isReadOnly: boolean) {
 
       if (toDelete.length === 0 && toWrite.length === 0) return;
 
-      const ops: Array<() => void> = [];
-      const batch = writeBatch(db);
+      const isStroke = (element: CanvasElement | undefined): element is StrokeElement =>
+        Boolean(element && (element.type === 'pen' || element.type === 'highlighter'));
 
-      for (const id of toDelete) {
-        const ref = doc(db, 'boards', boardId, 'elements', sanitizeId(id));
-        ops.push(() => batch.delete(ref));
-      }
+      const journalChanges: StrokeJournalChange[] = [];
       for (const item of toWrite) {
-        const ref = doc(db, 'boards', boardId, 'elements', sanitizeId(item.el.id));
-        const payload = serializeElementForFirestore(item.el, uid, boardId, item.isCreate);
-        if (item.isCreate) {
-          ops.push(() => batch.set(ref, payload));
-        } else {
-          ops.push(() => batch.update(ref, payload));
+        if (item.isCreate && isStroke(item.el)) {
+          journalChanges.push({ operation: 'upsert', element: item.el });
+        }
+      }
+      for (const id of toDelete) {
+        const previous = prevMap.get(id);
+        if (isStroke(previous)) {
+          journalChanges.push({
+            operation: 'delete',
+            elementId: id,
+            createdAtMs: previous.createdAtMs,
+          });
         }
       }
 
-      // Apply in chunks of 450 ops max
-      if (ops.length <= 450) {
-        ops.forEach((fn) => fn());
+      if (journalChanges.length > 0) {
+        try {
+          await queueStrokeChanges(boardId, journalChanges);
+        } catch (journalError) {
+          // Keep the app usable if local storage is unavailable: attempt the legacy
+          // direct Firestore path, while clearly surfacing that local durability failed.
+          setStrokeSyncStatus('error');
+          console.error('Unable to persist strokes in the local journal; trying direct Firestore writes.', journalError);
+          const directBatch = writeBatch(db);
+          for (const change of journalChanges) {
+            if (change.operation === 'upsert') {
+              directBatch.set(
+                doc(db, 'boards', boardId, 'elements', sanitizeId(change.element.id)),
+                serializeElementForFirestore(change.element, uid, boardId, true)
+              );
+            } else {
+              directBatch.delete(doc(db, 'boards', boardId, 'elements', sanitizeId(change.elementId)));
+            }
+          }
+          try {
+            await directBatch.commit();
+          } catch (directError) {
+            console.error('Direct Firestore fallback also failed; handwriting remains visible only in memory.', directError);
+          }
+        }
+      }
+
+      const directDeletes = toDelete.filter((id) => !isStroke(prevMap.get(id)));
+      const directWrites = toWrite.filter(
+        (item) => !(item.isCreate && isStroke(item.el))
+      );
+      if (directDeletes.length === 0 && directWrites.length === 0) return;
+
+      // Non-stroke canvas changes and edits to strokes that were already in the
+      // cloud retain their existing immediate persistence behavior.
+      for (let i = 0; i < directDeletes.length; i += 400) {
+        const batch = writeBatch(db);
+        directDeletes.slice(i, i + 400).forEach((id) =>
+          batch.delete(doc(db, 'boards', boardId, 'elements', sanitizeId(id)))
+        );
+        try {
+          await batch.commit();
+        } catch (err) {
+          handleFirestoreError(err, OperationType.DELETE, `boards/${boardId}/elements`);
+        }
+      }
+      for (let i = 0; i < directWrites.length; i += 400) {
+        const batch = writeBatch(db);
+        directWrites.slice(i, i + 400).forEach((item) => {
+          const ref = doc(db, 'boards', boardId, 'elements', sanitizeId(item.el.id));
+          const payload = serializeElementForFirestore(item.el, uid, boardId, item.isCreate);
+          if (item.isCreate) batch.set(ref, payload);
+          else batch.update(ref, payload);
+        });
         try {
           await batch.commit();
         } catch (err) {
           handleFirestoreError(err, OperationType.WRITE, `boards/${boardId}/elements`);
         }
-      } else {
-        for (let i = 0; i < toDelete.length; i += 400) {
-          const b = writeBatch(db);
-          toDelete.slice(i, i + 400).forEach((id) =>
-            b.delete(doc(db, 'boards', boardId, 'elements', sanitizeId(id)))
-          );
-          try {
-            await b.commit();
-          } catch (err) {
-            handleFirestoreError(err, OperationType.DELETE, `boards/${boardId}/elements`);
-          }
-        }
-        for (let i = 0; i < toWrite.length; i += 400) {
-          const b = writeBatch(db);
-          toWrite.slice(i, i + 400).forEach((item) => {
-            const ref = doc(db, 'boards', boardId, 'elements', sanitizeId(item.el.id));
-            const payload = serializeElementForFirestore(item.el, uid, boardId, item.isCreate);
-            if (item.isCreate) b.set(ref, payload);
-            else b.update(ref, payload);
-          });
-          try {
-            await b.commit();
-          } catch (err) {
-            handleFirestoreError(err, OperationType.WRITE, `boards/${boardId}/elements`);
-          }
-        }
       }
     },
-    [user, isReadOnly]
+    [user, isReadOnly, queueStrokeChanges]
   );
 
   const updateBoardMeta = useCallback(
@@ -614,6 +861,9 @@ export function useFirestoreBoards(user: User | null, isReadOnly: boolean) {
     activeBoardId,
     activeElements,
     loading,
+    pendingStrokeCount,
+    strokeSyncStatus,
+    savePendingStrokes,
     setWorkspaceActiveBoard,
     applyRemoteActiveBoardId,
     syncElementsDiff,
