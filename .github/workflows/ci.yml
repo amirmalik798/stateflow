@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm install --no-package-lock --legacy-peer-deps
+      - name: Run 1,000-element sync diff regression tests
+        run: npm run test:sync-diff
+      - name: Type-check
+        run: npm run lint
+      - name: Build
+        run: npm run build
