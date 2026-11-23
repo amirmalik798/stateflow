@@ -149,11 +149,12 @@ function serializeElementForFirestore(
 }
 
 /**
- * Compare the values that are actually persisted for an element.
- * Ignore object/array identity so immutable state rebuilds don't trigger writes.
- * Keep this in lockstep with serializeElementForFirestore's element fields.
+ * Compare the data that syncElementsDiff writes to Firestore.
+ *
+ * Timestamp fields are intentionally excluded: syncElementsDiff generates a new
+ * updatedAt value only after this comparison has established a real content change.
  */
-function hasElementChanged(previous: CanvasElement, next: CanvasElement): boolean {
+export function areElementDocumentsEqual(previous: CanvasElement, next: CanvasElement): boolean {
   if (
     previous.id !== next.id ||
     previous.type !== next.type ||
@@ -161,91 +162,84 @@ function hasElementChanged(previous: CanvasElement, next: CanvasElement): boolea
     Math.min(1, Math.max(0, previous.opacity ?? 1)) !==
       Math.min(1, Math.max(0, next.opacity ?? 1)) ||
     previous.locked !== next.locked
-  ) {
-    return true;
-  }
+  ) return false;
+
+  const sameString = (a: string, b: string, maxLength: number) =>
+    a.slice(0, maxLength) === b.slice(0, maxLength);
 
   switch (next.type) {
     case 'pen':
     case 'highlighter': {
       if (
         previous.type !== next.type ||
-        previous.color.slice(0, 64) !== next.color.slice(0, 64) ||
+        !sameString(previous.color, next.color, 64) ||
         previous.strokeWidth !== next.strokeWidth
-      ) return true;
+      ) return false;
 
-      const previousPoints = decimatePoints(previous.points).map((point) => ({
+      const a = decimatePoints(previous.points).map((point) => ({
         x: point.x,
         y: point.y,
         pressure: typeof point.pressure === 'number' ? point.pressure : 0.5,
       }));
-      const nextPoints = decimatePoints(next.points).map((point) => ({
+      const b = decimatePoints(next.points).map((point) => ({
         x: point.x,
         y: point.y,
         pressure: typeof point.pressure === 'number' ? point.pressure : 0.5,
       }));
-      return !arePointListsEqual(previousPoints, nextPoints);
+      return a.length === b.length && a.every((point, index) =>
+        point.x === b[index].x &&
+        point.y === b[index].y &&
+        point.pressure === b[index].pressure
+      );
     }
     case 'rectangle':
     case 'ellipse':
     case 'diamond':
-      return previous.type !== next.type ||
-        previous.x !== next.x ||
-        previous.y !== next.y ||
-        previous.width !== next.width ||
-        previous.height !== next.height ||
-        previous.strokeColor.slice(0, 64) !== next.strokeColor.slice(0, 64) ||
-        previous.fillColor.slice(0, 64) !== next.fillColor.slice(0, 64) ||
-        previous.strokeWidth !== next.strokeWidth;
+      return previous.type === next.type &&
+        previous.x === next.x &&
+        previous.y === next.y &&
+        previous.width === next.width &&
+        previous.height === next.height &&
+        sameString(previous.strokeColor, next.strokeColor, 64) &&
+        sameString(previous.fillColor, next.fillColor, 64) &&
+        previous.strokeWidth === next.strokeWidth;
     case 'line':
     case 'arrow':
-      return previous.type !== next.type ||
-        previous.x1 !== next.x1 ||
-        previous.y1 !== next.y1 ||
-        previous.x2 !== next.x2 ||
-        previous.y2 !== next.y2 ||
-        previous.strokeColor.slice(0, 64) !== next.strokeColor.slice(0, 64) ||
-        previous.strokeWidth !== next.strokeWidth;
+      return previous.type === next.type &&
+        previous.x1 === next.x1 &&
+        previous.y1 === next.y1 &&
+        previous.x2 === next.x2 &&
+        previous.y2 === next.y2 &&
+        sameString(previous.strokeColor, next.strokeColor, 64) &&
+        previous.strokeWidth === next.strokeWidth;
     case 'sticky':
-      return previous.type !== 'sticky' ||
-        previous.x !== next.x ||
-        previous.y !== next.y ||
-        previous.width !== next.width ||
-        previous.height !== next.height ||
-        previous.text.slice(0, 8000) !== next.text.slice(0, 8000) ||
-        previous.bgColor.slice(0, 64) !== next.bgColor.slice(0, 64) ||
-        previous.textColor.slice(0, 64) !== next.textColor.slice(0, 64);
+      return previous.type === 'sticky' &&
+        previous.x === next.x &&
+        previous.y === next.y &&
+        previous.width === next.width &&
+        previous.height === next.height &&
+        sameString(previous.text, next.text, 8000) &&
+        sameString(previous.bgColor, next.bgColor, 64) &&
+        sameString(previous.textColor, next.textColor, 64);
     case 'text':
-      return previous.type !== 'text' ||
-        previous.x !== next.x ||
-        previous.y !== next.y ||
-        previous.width !== next.width ||
-        previous.height !== next.height ||
-        previous.text.slice(0, 8000) !== next.text.slice(0, 8000) ||
-        previous.color.slice(0, 64) !== next.color.slice(0, 64) ||
-        previous.fontSize !== next.fontSize;
+      return previous.type === 'text' &&
+        previous.x === next.x &&
+        previous.y === next.y &&
+        previous.width === next.width &&
+        previous.height === next.height &&
+        sameString(previous.text, next.text, 8000) &&
+        sameString(previous.color, next.color, 64) &&
+        previous.fontSize === next.fontSize;
     case 'image':
-      return previous.type !== 'image' ||
-        previous.x !== next.x ||
-        previous.y !== next.y ||
-        previous.width !== next.width ||
-        previous.height !== next.height ||
-        previous.dataUrl.slice(0, 700000) !== next.dataUrl.slice(0, 700000);
+      return previous.type === 'image' &&
+        previous.x === next.x &&
+        previous.y === next.y &&
+        previous.width === next.width &&
+        previous.height === next.height &&
+        sameString(previous.dataUrl, next.dataUrl, 700000);
   }
 }
 
-function arePointListsEqual(
-  previous: Array<{ x: number; y: number; pressure: number }>,
-  next: Array<{ x: number; y: number; pressure: number }>
-): boolean {
-  if (previous.length !== next.length) return false;
-  for (let index = 0; index < previous.length; index += 1) {
-    const a = previous[index];
-    const b = next[index];
-    if (a.x !== b.x || a.y !== b.y || a.pressure !== b.pressure) return false;
-  }
-  return true;
-}
 
 function docToElement(id: string, data: Record<string, unknown>): CanvasElement {
   const type = String(data.type) as CanvasElement['type'];
@@ -543,7 +537,7 @@ export function useFirestoreBoards(user: User | null, isReadOnly: boolean) {
         const old = prevMap.get(el.id);
         if (!old) {
           toWrite.push({ el, isCreate: true });
-        } else if (hasElementChanged(old, el)) {
+        } else if (!areElementDocumentsEqual(old, el)) {
           toWrite.push({ el, isCreate: false });
         }
       }
