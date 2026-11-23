@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <rect width="512" height="512" rx="112" fill="#0F1115"/>
+  <rect x="32" y="32" width="448" height="448" rx="88" stroke="#242934" stroke-width="4"/>
+  <!-- Subtle infinite dot grid -->
+  <circle cx="152" cy="152" r="6" fill="#2E3646"/>
+  <circle cx="256" cy="152" r="6" fill="#2E3646"/>
+  <circle cx="360" cy="152" r="6" fill="#2E3646"/>
+  <circle cx="152" cy="256" r="6" fill="#2E3646"/>
+  <circle cx="360" cy="256" r="6" fill="#2E3646"/>
+  <circle cx="152" cy="360" r="6" fill="#2E3646"/>
+  <circle cx="256" cy="360" r="6" fill="#2E3646"/>
+  <circle cx="360" cy="360" r="6" fill="#2E3646"/>
+  <!-- Expressive infinite ribbon stroke -->
+  <path d="M132 316C132 230 202 186 256 256C310 326 380 282 380 196" stroke="#3B82F6" stroke-width="34" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Accent stylus node -->
+  <circle cx="380" cy="196" r="24" fill="#F8FAFC"/>
+  <circle cx="380" cy="196" r="10" fill="#2563EB"/>
+</svg>

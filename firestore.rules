@@ -1,0 +1,212 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net: default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Reusable Hardened Primitives
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isOwner(ownerId) {
+      return isVerifiedUser() && ownerId == request.auth.uid;
+    }
+
+    function isValidCamera(cam) {
+      return cam is map
+        && cam.keys().hasAll(['x', 'y', 'zoom'])
+        && cam.keys().hasOnly(['x', 'y', 'zoom'])
+        && cam.x is number
+        && cam.y is number
+        && cam.zoom is number
+        && cam.zoom >= 0.05
+        && cam.zoom <= 10;
+    }
+
+    function isValidWorkspace(data, userId) {
+      return data.keys().hasAll(['ownerId', 'activeBoardId', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'activeBoardId', 'updatedAt'])
+        && data.ownerId is string
+        && data.ownerId == userId
+        && data.ownerId == request.auth.uid
+        && isValidId(data.activeBoardId)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidBoard(data) {
+      return data.keys().hasAll(['ownerId', 'title', 'gridStyle', 'camera', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'title', 'gridStyle', 'camera', 'createdAt', 'updatedAt'])
+        && data.ownerId is string
+        && data.ownerId == request.auth.uid
+        && data.title is string
+        && data.title.size() >= 1
+        && data.title.size() <= 120
+        && data.gridStyle is string
+        && data.gridStyle in ['dots', 'grid', 'blank']
+        && isValidCamera(data.camera)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidStrokePoints(pts) {
+      return pts is list
+        && pts.size() >= 1
+        && pts.size() <= 4000
+        && pts[0] is map
+        && pts[0].keys().hasAll(['x', 'y'])
+        && pts[0].keys().hasOnly(['x', 'y', 'pressure'])
+        && pts[0].x is number
+        && pts[0].y is number;
+    }
+
+    function isValidOptionalString(data, key, maxLen) {
+      return !(key in data) || (data[key] is string && data[key].size() <= maxLen);
+    }
+
+    function isValidOptionalNumber(data, key) {
+      return !(key in data) || (data[key] is number);
+    }
+
+    function isValidElement(data, boardId) {
+      return data.keys().hasAll(['ownerId', 'boardId', 'type', 'zIndex', 'opacity', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'ownerId', 'boardId', 'type', 'zIndex', 'opacity', 'createdAt', 'updatedAt',
+          'points', 'color', 'strokeColor', 'fillColor', 'bgColor', 'textColor',
+          'strokeWidth', 'fontSize', 'x', 'y', 'width', 'height',
+          'x1', 'y1', 'x2', 'y2', 'text', 'dataUrl', 'locked'
+        ])
+        && data.ownerId is string
+        && data.ownerId == request.auth.uid
+        && data.boardId is string
+        && data.boardId == boardId
+        && data.type is string
+        && data.type in ['pen', 'highlighter', 'rectangle', 'ellipse', 'diamond', 'line', 'arrow', 'sticky', 'text', 'image']
+        && data.zIndex is number
+        && data.opacity is number
+        && data.opacity >= 0
+        && data.opacity <= 1
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp
+        && (!(data.type in ['pen', 'highlighter']) || ('points' in data && isValidStrokePoints(data.points)))
+        && isValidOptionalString(data, 'color', 64)
+        && isValidOptionalString(data, 'strokeColor', 64)
+        && isValidOptionalString(data, 'fillColor', 64)
+        && isValidOptionalString(data, 'bgColor', 64)
+        && isValidOptionalString(data, 'textColor', 64)
+        && isValidOptionalString(data, 'text', 8000)
+        && isValidOptionalString(data, 'dataUrl', 700000)
+        && isValidOptionalNumber(data, 'strokeWidth')
+        && isValidOptionalNumber(data, 'fontSize')
+        && isValidOptionalNumber(data, 'x')
+        && isValidOptionalNumber(data, 'y')
+        && isValidOptionalNumber(data, 'width')
+        && isValidOptionalNumber(data, 'height')
+        && isValidOptionalNumber(data, 'x1')
+        && isValidOptionalNumber(data, 'y1')
+        && isValidOptionalNumber(data, 'x2')
+        && isValidOptionalNumber(data, 'y2')
+        && (!('locked' in data) || data.locked is bool);
+    }
+
+    function ownsParentBoard(boardId) {
+      return exists(/databases/$(database)/documents/boards/$(boardId))
+        && get(/databases/$(database)/documents/boards/$(boardId)).data.ownerId == request.auth.uid;
+    }
+
+    // Workspace State: tracks active board across devices
+    match /workspaces/{userId} {
+      allow get: if isValidId(userId) && isOwner(userId);
+      allow list: if false;
+      allow create: if isValidId(userId)
+        && isOwner(userId)
+        && isValidWorkspace(incoming(), userId)
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(userId)
+        && isOwner(userId)
+        && isValidWorkspace(incoming(), userId)
+        && incoming().ownerId == existing().ownerId
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['activeBoardId', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    // Boards collection
+    match /boards/{boardId} {
+      allow get: if isValidId(boardId) && isOwner(existing().ownerId);
+      allow list: if isVerifiedUser() && existing().ownerId == request.auth.uid;
+      allow create: if isValidId(boardId)
+        && isVerifiedUser()
+        && isValidBoard(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(boardId)
+        && isVerifiedUser()
+        && isValidBoard(incoming())
+        && isOwner(existing().ownerId)
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          incoming().diff(existing()).affectedKeys().hasOnly(['camera', 'updatedAt'])
+          || incoming().diff(existing()).affectedKeys().hasOnly(['title', 'gridStyle', 'updatedAt'])
+          || incoming().diff(existing()).affectedKeys().hasOnly(['title', 'gridStyle', 'camera', 'updatedAt'])
+        );
+      allow delete: if isValidId(boardId) && isOwner(existing().ownerId);
+
+      // Elements subcollection (Master Gate + zero get() in list)
+      match /elements/{elementId} {
+        allow get: if isValidId(boardId)
+          && isValidId(elementId)
+          && isOwner(existing().ownerId)
+          && ownsParentBoard(boardId);
+        allow list: if isVerifiedUser() && existing().ownerId == request.auth.uid;
+        allow create: if isValidId(boardId)
+          && isValidId(elementId)
+          && isVerifiedUser()
+          && isValidElement(incoming(), boardId)
+          && ownsParentBoard(boardId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time;
+        allow update: if isValidId(boardId)
+          && isValidId(elementId)
+          && isVerifiedUser()
+          && isValidElement(incoming(), boardId)
+          && isOwner(existing().ownerId)
+          && ownsParentBoard(boardId)
+          && incoming().ownerId == existing().ownerId
+          && incoming().boardId == existing().boardId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'zIndex', 'opacity', 'points', 'color', 'strokeColor', 'fillColor',
+            'bgColor', 'textColor', 'strokeWidth', 'fontSize', 'x', 'y',
+            'width', 'height', 'x1', 'y1', 'x2', 'y2', 'text', 'dataUrl',
+            'locked', 'updatedAt'
+          ]);
+        allow delete: if isValidId(boardId)
+          && isValidId(elementId)
+          && isOwner(existing().ownerId)
+          && ownsParentBoard(boardId);
+      }
+    }
+  }
+}

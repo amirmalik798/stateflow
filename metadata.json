@@ -1,0 +1,6 @@
+{
+  "name": "SlateFlow",
+  "description": "An infinite, touch-first whiteboard canvas for sketching, diagramming, and spatial notes.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

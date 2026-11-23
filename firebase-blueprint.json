@@ -1,0 +1,187 @@
+{
+  "entities": {
+    "WorkspaceState": {
+      "title": "WorkspaceState",
+      "description": "Tracks the active board selection for a signed-in user across phone and desktop devices.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the workspace owner.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "activeBoardId": {
+          "type": "string",
+          "description": "Currently active board ID being viewed or edited.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the last active board update."
+        }
+      },
+      "required": ["ownerId", "activeBoardId", "updatedAt"]
+    },
+    "Board": {
+      "title": "Board",
+      "description": "An infinite whiteboard owned by a user, storing metadata and synced camera viewport coordinates.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the board owner.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "title": {
+          "type": "string",
+          "description": "Board display title.",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "gridStyle": {
+          "type": "string",
+          "enum": ["dots", "grid", "blank"],
+          "description": "Canvas background grid style."
+        },
+        "camera": {
+          "type": "object",
+          "description": "Synced camera center coordinates (x, y) and zoom level."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server last modified timestamp."
+        }
+      },
+      "required": ["ownerId", "title", "gridStyle", "camera", "createdAt", "updatedAt"]
+    },
+    "BoardElement": {
+      "title": "BoardElement",
+      "description": "A single vector stroke, shape, line, sticky note, text block, or image on a whiteboard.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the element owner.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "boardId": {
+          "type": "string",
+          "description": "Parent board document ID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "type": {
+          "type": "string",
+          "enum": ["pen", "highlighter", "rectangle", "ellipse", "diamond", "line", "arrow", "sticky", "text", "image"],
+          "description": "Element type."
+        },
+        "zIndex": {
+          "type": "number",
+          "description": "Layer ordering index."
+        },
+        "opacity": {
+          "type": "number",
+          "description": "Element opacity between 0 and 1."
+        },
+        "points": {
+          "type": "array",
+          "description": "Stroke points for pen and highlighter elements."
+        },
+        "color": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "strokeColor": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "fillColor": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "bgColor": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "textColor": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "strokeWidth": {
+          "type": "number"
+        },
+        "fontSize": {
+          "type": "number"
+        },
+        "x": {
+          "type": "number"
+        },
+        "y": {
+          "type": "number"
+        },
+        "width": {
+          "type": "number"
+        },
+        "height": {
+          "type": "number"
+        },
+        "x1": {
+          "type": "number"
+        },
+        "y1": {
+          "type": "number"
+        },
+        "x2": {
+          "type": "number"
+        },
+        "y2": {
+          "type": "number"
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 8000
+        },
+        "dataUrl": {
+          "type": "string",
+          "maxLength": 700000
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["ownerId", "boardId", "type", "zIndex", "opacity", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/workspaces/{userId}": {
+      "schema": { "$ref": "#/entities/WorkspaceState" },
+      "description": "Per-user active board pointer synced across mobile and desktop."
+    },
+    "/boards/{boardId}": {
+      "schema": { "$ref": "#/entities/Board" },
+      "description": "User-owned whiteboards with title, grid style, and synced camera coordinates."
+    },
+    "/boards/{boardId}/elements/{elementId}": {
+      "schema": { "$ref": "#/entities/BoardElement" },
+      "description": "Individual vector elements belonging to a whiteboard."
+    }
+  }
+}
