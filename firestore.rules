@@ -152,11 +152,11 @@ service cloud.firestore {
     // Boards collection
     match /boards/{boardId} {
       allow get: if isValidId(boardId) && isOwner(existing().ownerId);
-      allow list: if isVerifiedUser() && existing().ownerId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
       allow create: if isValidId(boardId)
         && isVerifiedUser()
         && isValidBoard(incoming())
-        && incoming().createdAt == request.time
+        && incoming().createdAt <= request.time
         && incoming().updatedAt == request.time;
       allow update: if isValidId(boardId)
         && isVerifiedUser()
@@ -178,7 +178,7 @@ service cloud.firestore {
           && isValidId(elementId)
           && isOwner(existing().ownerId)
           && ownsParentBoard(boardId);
-        allow list: if isVerifiedUser() && existing().ownerId == request.auth.uid;
+        allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
         allow create: if isValidId(boardId)
           && isValidId(elementId)
           && isVerifiedUser()
@@ -204,8 +204,11 @@ service cloud.firestore {
           ]);
         allow delete: if isValidId(boardId)
           && isValidId(elementId)
-          && isOwner(existing().ownerId)
-          && ownsParentBoard(boardId);
+          && ownsParentBoard(boardId)
+          && (
+            !exists(/databases/$(database)/documents/boards/$(boardId)/elements/$(elementId))
+            || isOwner(existing().ownerId)
+          );
       }
     }
   }
