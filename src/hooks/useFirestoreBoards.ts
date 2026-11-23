@@ -248,6 +248,7 @@ export function useFirestoreBoards(user: User | null, isReadOnly: boolean) {
   const cameraSaveTimerRef = useRef<number | null>(null);
   const strokeFlushTimerRef = useRef<number | null>(null);
   const strokeQueueSerialRef = useRef<Promise<void>>(Promise.resolve());
+  const strokeFlushPromiseRef = useRef<Promise<void> | null>(null);
   const seededRef = useRef<boolean>(false);
 
   const runStrokeQueueSerially = useCallback(<T,>(task: () => Promise<T>): Promise<T> => {
@@ -258,75 +259,84 @@ export function useFirestoreBoards(user: User | null, isReadOnly: boolean) {
 
   const flushPendingStrokesInternal = useCallback(async () => {
     if (!user || isReadOnly) return;
-    const entries = await listStrokeJournalEntries(user.uid);
-    setPendingStrokeCount(entries.length);
-    if (entries.length === 0) {
-      setStrokeSyncStatus('saved');
-      return;
-    }
-    if (typeof navigator !== 'undefined' && !navigator.onLine) {
-      setStrokeSyncStatus('offline');
-      return;
-    }
 
-    setStrokeSyncStatus('syncing');
-    const byBoard = new Map<string, StrokeJournalEntry[]>();
-    for (const entry of entries) {
-      const group = byBoard.get(entry.boardId) ?? [];
-      group.push(entry);
-      byBoard.set(entry.boardId, group);
-    }
-
-    // Keep each batch scoped to one board. The rules validate the same parent board
-    // for every stroke, allowing Firestore to cache that parent-document lookup.
-    for (const [boardId, boardEntries] of byBoard) {
-      for (let offset = 0; offset < boardEntries.length; offset += 100) {
-        const chunk = boardEntries.slice(offset, offset + 100);
-        const batch = writeBatch(db);
-        for (const entry of chunk) {
-          const ref = doc(db, 'boards', boardId, 'elements', sanitizeId(entry.elementId));
-          if (entry.operation === 'delete') {
-            batch.delete(ref);
-          } else if (entry.element) {
-            batch.set(
-              ref,
-              serializeElementForFirestore(
-                entry.element,
-                user.uid,
-                boardId,
-                true,
-                Timestamp.fromMillis(entry.createdAtMs)
-              )
-            );
-          }
-        }
-        await batch.commit();
-        await acknowledgeStrokeJournalEntries(chunk);
-        const remaining = await listStrokeJournalEntries(user.uid);
-        setPendingStrokeCount(remaining.length);
+    while (true) {
+      const entries = await listStrokeJournalEntries(user.uid);
+      setPendingStrokeCount(entries.length);
+      if (entries.length === 0) {
+        setStrokeSyncStatus('saved');
+        return;
       }
-    }
+      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        setStrokeSyncStatus('offline');
+        return;
+      }
 
-    const remaining = await listStrokeJournalEntries(user.uid);
-    setPendingStrokeCount(remaining.length);
-    setStrokeSyncStatus(remaining.length === 0 ? 'saved' : 'pending');
-    if (remaining.length === 0 && strokeFlushTimerRef.current !== null) {
-      window.clearTimeout(strokeFlushTimerRef.current);
-      strokeFlushTimerRef.current = null;
+      setStrokeSyncStatus('syncing');
+      const byBoard = new Map<string, StrokeJournalEntry[]>();
+      for (const entry of entries) {
+        const group = byBoard.get(entry.boardId) ?? [];
+        group.push(entry);
+        byBoard.set(entry.boardId, group);
+      }
+
+      // Keep each batch scoped to one board. The rules validate the same parent board
+      // for every stroke, allowing Firestore to cache that parent-document lookup.
+      for (const [boardId, boardEntries] of byBoard) {
+        for (let offset = 0; offset < boardEntries.length; offset += 100) {
+          const chunk = boardEntries.slice(offset, offset + 100);
+          const batch = writeBatch(db);
+          for (const entry of chunk) {
+            const ref = doc(db, 'boards', boardId, 'elements', sanitizeId(entry.elementId));
+            if (entry.operation === 'delete') {
+              batch.delete(ref);
+            } else if (entry.element) {
+              batch.set(
+                ref,
+                serializeElementForFirestore(
+                  entry.element,
+                  user.uid,
+                  boardId,
+                  true,
+                  Timestamp.fromMillis(entry.createdAtMs)
+                )
+              );
+            }
+          }
+          await batch.commit();
+          await acknowledgeStrokeJournalEntries(chunk);
+          const remaining = await listStrokeJournalEntries(user.uid);
+          setPendingStrokeCount(remaining.length);
+        }
+      }
+
+      const remaining = await listStrokeJournalEntries(user.uid);
+      setPendingStrokeCount(remaining.length);
+      if (remaining.length === 0) {
+        setStrokeSyncStatus('saved');
+        if (strokeFlushTimerRef.current !== null) {
+          window.clearTimeout(strokeFlushTimerRef.current);
+          strokeFlushTimerRef.current = null;
+        }
+        return;
+      }
+      // New strokes can be journaled while a network batch is in flight.
+      // Loop again until the queue observed after acknowledgement is empty.
     }
   }, [user, isReadOnly]);
 
   const savePendingStrokes = useCallback(() => {
-    return runStrokeQueueSerially(async () => {
-      try {
-        await flushPendingStrokesInternal();
-      } catch (syncError) {
-        setStrokeSyncStatus('error');
-        console.error('Stateflow handwriting cloud sync failed; pending strokes remain in IndexedDB.', syncError);
-        throw syncError;
-      }
+    if (strokeFlushPromiseRef.current) return strokeFlushPromiseRef.current;
+    const promise = flushPendingStrokesInternal().catch((syncError) => {
+      setStrokeSyncStatus('error');
+      console.error('Stateflow handwriting cloud sync failed; pending strokes remain in IndexedDB.', syncError);
+      throw syncError;
+    }).finally(() => {
+      strokeFlushPromiseRef.current = null;
     });
-  }, [runStrokeQueueSerially, flushPendingStrokesInternal]);
+    strokeFlushPromiseRef.current = promise;
+    return promise;
+  }, [flushPendingStrokesInternal]);
 
   const queueStrokeChanges = useCallback((boardId: string, changes: StrokeJournalChange[]) => {
     return runStrokeQueueSerially(async () => {
@@ -346,7 +356,11 @@ export function useFirestoreBoards(user: User | null, isReadOnly: boolean) {
           window.clearTimeout(strokeFlushTimerRef.current);
           strokeFlushTimerRef.current = null;
         }
-        await flushPendingStrokesInternal();
+        // Do not await the network flush here. Later strokes must continue being
+        // written to IndexedDB while Firestore is slow or temporarily unreachable.
+        window.setTimeout(() => {
+          void savePendingStrokes().catch(() => undefined);
+        }, 0);
       } else if (entries.length > 0) {
         if (strokeFlushTimerRef.current !== null) {
           window.clearTimeout(strokeFlushTimerRef.current);
@@ -357,7 +371,7 @@ export function useFirestoreBoards(user: User | null, isReadOnly: boolean) {
         }, 10000);
       }
     });
-  }, [user, isReadOnly, runStrokeQueueSerially, flushPendingStrokesInternal, savePendingStrokes]);
+  }, [user, isReadOnly, runStrokeQueueSerially, savePendingStrokes]);
 
   useEffect(() => {
     if (!user || isReadOnly) {
