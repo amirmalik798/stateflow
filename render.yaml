@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: stateflow
+    runtime: docker
+    plan: free
+    region: frankfurt
+    branch: feature/render-managed-postgres-hosting
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /healthz
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: stateflow-free-db
+          property: connectionString
+      - key: PG_POOL_SIZE
+        value: "4"
+      - key: PG_SSL
+        value: "false"
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false

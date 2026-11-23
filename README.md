@@ -7,7 +7,7 @@ Stateflow is a touch-first infinite whiteboard with stylus drawing, live desktop
 Prerequisites: Node.js 22 or newer and PostgreSQL 16 or newer.
 
 1. Install dependencies: `npm install`.
-2. Copy `.env.example` to `.env` and configure a local PostgreSQL connection.
+2. Copy `.env.example` to `.env` and configure a PostgreSQL connection.
 3. Start the app: `npm run dev`.
 4. For Google sign-in, register `http://localhost:3000/api/auth/google/callback` as an authorized redirect URI and configure the OAuth variables.
 
@@ -20,28 +20,24 @@ Prerequisites: Node.js 22 or newer and PostgreSQL 16 or newer.
 - Offline devices keep pending operations locally and retry after connectivity returns.
 - The phone is the writing device; desktop remains the read-only live view.
 
-## Hosting with PostgreSQL on a local Windows PC
+## Render hosting
 
-The Render service can run the Stateflow web application while PostgreSQL stays on your own Windows PC. The Render container connects through Tailscale userspace networking and a loopback-only SOCKS5-to-TCP forwarder.
+The recommended hosted setup runs both the Stateflow web service and its dedicated PostgreSQL database in the same Render workspace and Frankfurt region. The web service uses the database's internal connection URL through Render's private network.
 
-See [Local PostgreSQL over Tailscale](deploy/LOCAL_POSTGRES_TAILSCALE.md) for Windows configuration, Tailscale least-privilege access, Render variables, Google OAuth, and the offline test plan.
-
-**Do not expose PostgreSQL publicly or create a router port-forward for port 5432.** Tailscale should be the only remote route to PostgreSQL.
+See [Render free deployment](deploy/RENDER_FREE.md) for the workspace setup, OAuth configuration, and free-tier limitations. The checked-in `render.yaml` references the separately provisioned `stateflow-free-db` database; it does not create or modify the HRMS database.
 
 ## Offline behavior
 
-A previously signed-in device can open its locally cached account profile and IndexedDB boards if the PC/database is unavailable. Changes remain in the local outbox until the Render service can reach the PC database again. A new sign-in or first-time device setup still requires the database to be reachable.
+A previously signed-in device can continue working from its local IndexedDB data while the network or hosted service is unavailable. New sign-ins and first-time device setup require the backend. Pending changes remain in the device's local outbox and sync when connectivity returns and the service is reachable.
+
+Live ink previews require both devices to be online and connected to the same running Stateflow service. The durable database sync makes completed work available after a device reconnects; it does not require the desktop PC to stay powered on.
 
 ## Important migration note
 
-Existing Firestore boards and media are not migrated by this branch. Keep the old Firebase project and its data intact until a migration/import flow is implemented, verified against every board and asset, and tested on phone and desktop.
+Existing Firestore boards and media are not migrated by this hosting setup. Keep the old Firebase project and its data intact until a migration/import flow is implemented, verified against every board and asset, and tested on phone and desktop.
 
 ## Commands
 
 - `npm run lint` — TypeScript check
 - `npm run test:sync-diff` — synchronization and local database regression tests
 - `npm run build` — production frontend build
-
-## Render free staging limitations
-
-The free web service sleeps after 15 minutes without incoming HTTP requests or WebSocket messages, then takes about a minute to wake. It has an ephemeral filesystem and 750 included instance hours per workspace per month. Tailscale therefore uses in-memory state and an ephemeral auth key that re-authenticates on container restart. See the staging guide for the complete limitations.
