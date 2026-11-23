@@ -363,19 +363,35 @@ export default function App() {
   const handleElementsChange = useCallback(
     (newElements: CanvasElement[], pushHistory = false) => {
       if (isReadOnly || !activeBoard) return;
+
+      // Stamp newly completed strokes locally before either the journal or WebSocket
+      // sees them. This immutable timestamp makes immediate undo/redo safe even if
+      // the Firestore snapshot acknowledgement has not arrived yet.
+      const previousById = new Map(activeBoard.elements.map((element) => [element.id, element]));
+      const normalizedElements = newElements.map((element) => {
+        if (element.type !== 'pen' && element.type !== 'highlighter') return element;
+        const previous = previousById.get(element.id);
+        const previousCreatedAt =
+          previous && (previous.type === 'pen' || previous.type === 'highlighter')
+            ? previous.createdAtMs
+            : undefined;
+        const createdAtMs = element.createdAtMs ?? previousCreatedAt ?? Date.now();
+        return element.createdAtMs === createdAtMs ? element : { ...element, createdAtMs };
+      });
+
       lastLocalEditAtRef.current = Date.now();
-      setOptimisticElements(newElements);
+      setOptimisticElements(normalizedElements);
       const prevBroadcast = lastBroadcastElsRef.current;
-      lastBroadcastElsRef.current = newElements;
-      sendElementsPatch(activeBoard.id, prevBroadcast, newElements, pushHistory);
+      lastBroadcastElsRef.current = normalizedElements;
+      sendElementsPatch(activeBoard.id, prevBroadcast, normalizedElements, pushHistory);
       if (pushHistory) {
         const previousCommitted = committedSnapshotRef.current;
         historyRef.current.past.push(previousCommitted);
         if (historyRef.current.past.length > 60) historyRef.current.past.shift();
         historyRef.current.future = [];
         setHistoryTick((t) => t + 1);
-        committedSnapshotRef.current = newElements;
-        void syncElementsDiff(activeBoard.id, previousCommitted, newElements);
+        committedSnapshotRef.current = normalizedElements;
+        void syncElementsDiff(activeBoard.id, previousCommitted, normalizedElements);
       }
     },
     [isReadOnly, activeBoard, sendElementsPatch, syncElementsDiff]
